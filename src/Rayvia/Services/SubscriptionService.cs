@@ -256,7 +256,7 @@ public sealed class SubscriptionService
         try
         {
             var normalized = value.Trim().Replace('-', '+').Replace('_', '/');
-            normalized += normalized.Length % 4 switch
+            normalized += (normalized.Length % 4) switch
             {
                 2 => "==",
                 3 => "=",
