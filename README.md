@@ -1,76 +1,134 @@
 # Rayvia
 
-Rayvia is a Windows proxy client built around Xray.
+Rayvia — универсальный Windows-клиент для Xray.
 
-## Current version
+## Скачать
 
-`0.1.0`
+**[Скачать Rayvia 0.2.0 — установщик Windows x64](https://github.com/m-amirov/Rayvia/releases/download/v0.2.0/Rayvia-Setup-x64.exe)**
 
-The first version focuses on the basic desktop flow:
+Страница релиза: [v0.2.0](https://github.com/m-amirov/Rayvia/releases/tag/v0.2.0)
 
-- add a subscription;
-- select a server;
-- connect through System Proxy;
-- choose routing mode;
-- add custom routing rules;
-- inspect the local log;
-- receive application updates from GitHub Releases.
+Установщик self-contained: отдельно устанавливать .NET не требуется.
 
-Supported subscription entries:
+## Возможности 0.2.0
 
-- VLESS, including REALITY;
+- System Proxy и TUN;
+- VLESS, включая REALITY;
 - VMess;
 - Trojan;
-- Shadowsocks.
+- Shadowsocks;
+- URL-подписки и отдельные ссылки серверов;
+- проверка задержки серверов;
+- автоматический выбор доступного сервера с минимальной задержкой;
+- группы серверов;
+- маршрутизация по доменам, IP/CIDR, GeoIP и GeoSite;
+- режим «Россия и локальные сети напрямую»;
+- Routing Inspector;
+- Live Connections по access log Xray;
+- локальный журнал;
+- автоматическая загрузка Xray core;
+- автоматическая проверка обновлений;
+- загрузка установщика новой версии из GitHub Releases;
+- проверка SHA-256 скачанного обновления.
 
-## Routing
+## TUN
 
-Three modes are available.
+Rayvia использует встроенный TUN-inbound Xray и Wintun.
 
-**Smart** — Russian IP ranges and sites are sent directly. Other traffic uses the selected proxy server.
+При первом подключении в TUN-режиме приложение запросит права администратора. Rayvia перезапустится с повышенными правами и продолжит подключение.
 
-**Proxy all** — traffic handled by the Windows system proxy uses the selected server.
+Xray автоматически создаёт интерфейс Rayvia, добавляет системные маршруты и выбирает физический интерфейс для исходящего соединения.
 
-**Direct all** — traffic handled by Rayvia is sent directly.
+## Маршрутизация
 
-Custom rules are evaluated before the selected mode. Rules may contain a domain, `full:` / `domain:` / `regexp:` / `geosite:` expression, IP address, CIDR or `geoip:` expression.
+Доступны три базовых режима:
+
+**Умная** — geoip:private, geoip:ru и geosite:ru идут напрямую, остальной трафик через выбранный сервер.
+
+**Всё через прокси** — трафик Xray использует прокси-маршрут.
+
+**Всё напрямую** — трафик Xray отправляется напрямую.
+
+Пользовательские правила имеют приоритет над базовым режимом.
+
+Поддерживаются домены, full:, domain:, regexp:, geosite:, IP, CIDR и geoip:.
+
+## Routing Inspector
+
+В разделе «Маршрутизация» можно ввести домен или IP и увидеть:
+
+- DNS-результат;
+- ожидаемый маршрут PROXY, DIRECT или BLOCK;
+- совпавшее пользовательское правило;
+- базовое правило, если пользовательского совпадения нет.
+
+Для правил GeoIP/GeoSite окончательное решение при реальном соединении остаётся за Xray и его geodata.
+
+## Live Connections
+
+Раздел «Соединения» читает access log работающего Xray и показывает последние назначения и outbound-тег. История ограничена текущей сессией интерфейса Rayvia.
+
+## Серверы и группы
+
+Кнопка «Проверить все» измеряет TCP connect latency до серверов. Проверка выполняется параллельно и не требует ICMP.
+
+При включённом «Автовыборе» Rayvia перед подключением проверяет серверы выбранной группы и выбирает доступный сервер с минимальной задержкой.
+
+Группы сохраняются между запусками. Идентификаторы серверов стабильны при обновлении одной и той же подписки.
 
 ## Xray core
 
-Rayvia does not bundle Xray. On the first connection it downloads `Xray-windows-64.zip` from the latest official XTLS/Xray-core GitHub release and stores the required files in the user's local application data directory.
+Rayvia не включает Xray в установщик. При первом подключении загружается Xray-windows-64.zip из последнего официального релиза XTLS/Xray-core.
 
-## Updates
+Для TUN из того же архива используется wintun.dll.
 
-On startup Rayvia checks the latest release in this repository. If a newer version exists and `Rayvia-Setup-x64.exe` is attached to the release, the installer is downloaded automatically. The application then shows an **Install** action.
+Файлы хранятся в:
 
-Automatic checks can be disabled in Settings.
+%LOCALAPPDATA%\Rayvia\Core
 
-## Build
+## Обновления Rayvia
 
-Requirements: .NET 10 SDK and Windows.
+При запуске Rayvia проверяет последний GitHub Release. Если версия новее:
 
-```powershell
-dotnet build src/Rayvia/Rayvia.csproj -c Release
-```
+1. скачивается Rayvia-Setup-x64.exe;
+2. при наличии SHA256SUMS.txt проверяется SHA-256;
+3. в интерфейсе появляется кнопка «Установить».
 
-Self-contained application:
+Автопроверку можно выключить в настройках.
 
-```powershell
-dotnet publish src/Rayvia/Rayvia.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish
-```
+## Диагностика запуска
 
-## Release
+Если главное окно не удалось создать, Rayvia показывает ошибку и записывает подробности в:
 
-The `Release` GitHub Actions workflow builds the self-contained application, creates an Inno Setup installer and publishes `Rayvia-Setup-x64.exe` and `SHA256SUMS.txt`.
+%LOCALAPPDATA%\Rayvia\Logs\startup.log
 
-## Data
+Логи Xray находятся рядом.
 
-Settings: `%APPDATA%\Rayvia`
+## Сборка
 
-Xray and downloaded updates: `%LOCALAPPDATA%\Rayvia`
+Требования:
 
-Subscription URLs can contain credentials. Do not publish `settings.json`.
+- Windows;
+- .NET 10 SDK.
 
-## Not in 0.1.0
+Команда сборки:
 
-TUN mode, per-application routing, latency tests, server groups and live connections are planned after the initial System Proxy build is stable.
+    dotnet build src/Rayvia/Rayvia.csproj -c Release
+
+Иконка создаётся перед сборкой скриптом tools/GenerateIcon.ps1.
+
+Self-contained publish:
+
+    dotnet publish src/Rayvia/Rayvia.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish
+
+## Данные
+
+Настройки:
+
+%APPDATA%\Rayvia\settings.json
+
+Xray, логи и скачанные обновления:
+
+%LOCALAPPDATA%\Rayvia
+
+URL подписки может содержать секрет. Не публикуйте settings.json.

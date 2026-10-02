@@ -2,9 +2,6 @@ bin/
 obj/
 publish/
 artifacts/
-.vs/
-.idea/
 *.user
 *.suo
-*.pdb
-*.tmp
+src/Rayvia/Assets/rayvia.ico

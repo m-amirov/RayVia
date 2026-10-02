@@ -1,8 +1,8 @@
-using System.IO;
-using System.Net.Http;
 using System.Diagnostics;
+using System.IO;
 using System.IO.Compression;
 using System.Net;
+using System.Net.Http;
 using System.Text.Json;
 using Rayvia.Models;
 
@@ -22,26 +22,41 @@ public sealed class XrayCoreService : IDisposable
         "Rayvia",
         "Core");
 
+    private readonly string _logDirectory = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Rayvia",
+        "Logs");
+
     public bool IsRunning => _process is { HasExited: false };
+    public string AccessLogPath => Path.Combine(_logDirectory, "access.log");
+    public string ErrorLogPath => Path.Combine(_logDirectory, "xray-error.log");
 
     public XrayCoreService(LogService log)
     {
         _log = log;
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("Rayvia/0.1");
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd("Rayvia/0.2");
         _http.Timeout = TimeSpan.FromSeconds(60);
     }
 
     public async Task ConnectAsync(ProxyNode node, AppSettings settings)
     {
-        await EnsureCoreAsync();
+        await EnsureCoreAsync(settings.ConnectionMode == ConnectionMode.Tun);
 
         Disconnect();
 
+        Directory.CreateDirectory(_coreDirectory);
+        Directory.CreateDirectory(_logDirectory);
+
+        TryDelete(AccessLogPath);
+        TryDelete(ErrorLogPath);
+
         var configPath = Path.Combine(_coreDirectory, "rayvia-config.json");
-        var config = BuildConfig(node, settings);
+        var config = BuildConfig(node, settings, AccessLogPath, ErrorLogPath);
         await File.WriteAllTextAsync(configPath, config);
 
         var executable = Path.Combine(_coreDirectory, "xray.exe");
+        await ValidateConfigAsync(executable, configPath);
+
         _process = new Process
         {
             StartInfo = new ProcessStartInfo
@@ -62,11 +77,13 @@ public sealed class XrayCoreService : IDisposable
             if (!string.IsNullOrWhiteSpace(e.Data))
                 _log.Write("Xray: " + e.Data);
         };
+
         _process.ErrorDataReceived += (_, e) =>
         {
             if (!string.IsNullOrWhiteSpace(e.Data))
                 _log.Write("Xray: " + e.Data);
         };
+
         _process.Exited += (_, _) => _log.Write("Xray остановлен.");
 
         if (!_process.Start())
@@ -75,11 +92,20 @@ public sealed class XrayCoreService : IDisposable
         _process.BeginOutputReadLine();
         _process.BeginErrorReadLine();
 
-        await Task.Delay(500);
-        if (_process.HasExited)
-            throw new InvalidOperationException("Xray завершился сразу после запуска. Откройте журнал для подробностей.");
+        await Task.Delay(settings.ConnectionMode == ConnectionMode.Tun ? 1200 : 500);
 
-        _log.Write($"Подключение: {node.Name} ({node.Protocol.ToUpperInvariant()}).");
+        if (_process.HasExited)
+        {
+            var error = ReadLastError();
+            throw new InvalidOperationException(
+                string.IsNullOrWhiteSpace(error)
+                    ? "Xray завершился сразу после запуска."
+                    : $"Xray завершился сразу после запуска. {error}");
+        }
+
+        _log.Write(
+            $"Подключение: {node.Name} · {node.Protocol.ToUpperInvariant()} · " +
+            $"{(settings.ConnectionMode == ConnectionMode.Tun ? "TUN" : "System Proxy")}.");
     }
 
     public void Disconnect()
@@ -92,12 +118,12 @@ public sealed class XrayCoreService : IDisposable
             if (!_process.HasExited)
             {
                 _process.Kill(true);
-                _process.WaitForExit(2000);
+                _process.WaitForExit(3000);
             }
         }
         catch
         {
-            // Best-effort shutdown.
+            // Best-effort shutdown. Wintun and routes are released with the process.
         }
         finally
         {
@@ -106,12 +132,14 @@ public sealed class XrayCoreService : IDisposable
         }
     }
 
-    private async Task EnsureCoreAsync()
+    private async Task EnsureCoreAsync(bool requireWintun)
     {
         Directory.CreateDirectory(_coreDirectory);
-        var executable = Path.Combine(_coreDirectory, "xray.exe");
 
-        if (File.Exists(executable))
+        var executable = Path.Combine(_coreDirectory, "xray.exe");
+        var wintun = Path.Combine(_coreDirectory, "wintun.dll");
+
+        if (File.Exists(executable) && (!requireWintun || File.Exists(wintun)))
             return;
 
         _log.Write("Скачивание Xray core…");
@@ -125,7 +153,10 @@ public sealed class XrayCoreService : IDisposable
         string? downloadUrl = null;
         foreach (var asset in doc.RootElement.GetProperty("assets").EnumerateArray())
         {
-            if (!string.Equals(asset.GetProperty("name").GetString(), XrayAssetName, StringComparison.OrdinalIgnoreCase))
+            if (!string.Equals(
+                    asset.GetProperty("name").GetString(),
+                    XrayAssetName,
+                    StringComparison.OrdinalIgnoreCase))
                 continue;
 
             downloadUrl = asset.GetProperty("browser_download_url").GetString();
@@ -140,9 +171,12 @@ public sealed class XrayCoreService : IDisposable
 
         try
         {
-            using (var download = await _http.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead))
+            using (var download = await _http.GetAsync(
+                       downloadUrl,
+                       HttpCompletionOption.ResponseHeadersRead))
             {
                 download.EnsureSuccessStatusCode();
+
                 await using var input = await download.Content.ReadAsStreamAsync();
                 await using var output = File.Create(zipPath);
                 await input.CopyToAsync(output);
@@ -150,9 +184,19 @@ public sealed class XrayCoreService : IDisposable
 
             ZipFile.ExtractToDirectory(zipPath, extractDirectory, true);
 
-            foreach (var fileName in new[] { "xray.exe", "geoip.dat", "geosite.dat" })
+            foreach (var fileName in new[]
+                     {
+                         "xray.exe",
+                         "geoip.dat",
+                         "geosite.dat",
+                         "wintun.dll",
+                         "LICENSE-Wintun"
+                     })
             {
-                var source = Directory.EnumerateFiles(extractDirectory, fileName, SearchOption.AllDirectories).FirstOrDefault();
+                var source = Directory
+                    .EnumerateFiles(extractDirectory, fileName, SearchOption.AllDirectories)
+                    .FirstOrDefault();
+
                 if (source is not null)
                     File.Copy(source, Path.Combine(_coreDirectory, fileName), true);
             }
@@ -160,16 +204,91 @@ public sealed class XrayCoreService : IDisposable
             if (!File.Exists(executable))
                 throw new InvalidOperationException("Архив Xray не содержит xray.exe.");
 
+            if (requireWintun && !File.Exists(wintun))
+                throw new InvalidOperationException("Архив Xray не содержит wintun.dll, необходимый для TUN.");
+
             _log.Write("Xray core установлен.");
         }
         finally
         {
-            try { File.Delete(zipPath); } catch { }
+            TryDelete(zipPath);
             try { Directory.Delete(extractDirectory, true); } catch { }
         }
     }
 
-    private static string BuildConfig(ProxyNode node, AppSettings settings)
+    private static async Task ValidateConfigAsync(string executable, string configPath)
+    {
+        using var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = executable,
+                Arguments = $"run -test -c \"{configPath}\"",
+                WorkingDirectory = Path.GetDirectoryName(executable)!,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            }
+        };
+
+        process.Start();
+
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
+
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            try { process.Kill(true); } catch { }
+            throw new InvalidOperationException("Проверка конфигурации Xray не завершилась.");
+        }
+
+        var stdout = await stdoutTask;
+        var stderr = await stderrTask;
+
+        if (process.ExitCode == 0)
+            return;
+
+        var detail = string.Join(
+            " ",
+            new[] { stderr, stdout }
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Select(x => x.Trim()));
+
+        throw new InvalidOperationException(
+            string.IsNullOrWhiteSpace(detail)
+                ? "Xray отклонил конфигурацию."
+                : $"Xray отклонил конфигурацию: {detail}");
+    }
+
+    private string ReadLastError()
+    {
+        try
+        {
+            if (!File.Exists(ErrorLogPath))
+                return "";
+
+            return string.Join(
+                " ",
+                File.ReadLines(ErrorLogPath).TakeLast(3)).Trim();
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    private static string BuildConfig(
+        ProxyNode node,
+        AppSettings settings,
+        string accessLogPath,
+        string errorLogPath)
     {
         var rules = new List<object>();
 
@@ -187,14 +306,10 @@ public sealed class XrayCoreService : IDisposable
 
             if (LooksLikeIpRule(rule.Pattern))
             {
-                var ip = rule.Pattern.StartsWith("geoip:", StringComparison.OrdinalIgnoreCase)
-                    ? rule.Pattern
-                    : rule.Pattern;
-
                 rules.Add(new Dictionary<string, object?>
                 {
                     ["type"] = "field",
-                    ["ip"] = new[] { ip },
+                    ["ip"] = new[] { rule.Pattern },
                     ["outboundTag"] = outbound
                 });
             }
@@ -221,6 +336,7 @@ public sealed class XrayCoreService : IDisposable
                 ["ip"] = new[] { "geoip:private", "geoip:ru" },
                 ["outboundTag"] = "direct"
             });
+
             rules.Add(new Dictionary<string, object?>
             {
                 ["type"] = "field",
@@ -238,27 +354,65 @@ public sealed class XrayCoreService : IDisposable
             });
         }
 
+        var inbounds = new List<object>();
+
+        if (settings.ConnectionMode == ConnectionMode.Tun)
+        {
+            inbounds.Add(new Dictionary<string, object?>
+            {
+                ["tag"] = "tun-in",
+                ["protocol"] = "tun",
+                ["settings"] = new Dictionary<string, object?>
+                {
+                    ["name"] = "Rayvia",
+                    ["desc"] = "Rayvia",
+                    ["mtu"] = 1500,
+                    ["gateway"] = new[] { "10.66.0.1/30", "fd00:66::1/126" },
+                    ["dns"] = new[]
+                    {
+                        "1.1.1.1",
+                        "8.8.8.8",
+                        "2606:4700:4700::1111",
+                        "2001:4860:4860::8888"
+                    },
+                    ["autoSystemRoutingTable"] = new[] { "0.0.0.0/0", "::/0" },
+                    ["autoOutboundsInterface"] = "auto"
+                },
+                ["sniffing"] = new Dictionary<string, object?>
+                {
+                    ["enabled"] = true,
+                    ["destOverride"] = new[] { "http", "tls", "quic" },
+                    ["routeOnly"] = true
+                }
+            });
+        }
+
+        inbounds.Add(new Dictionary<string, object?>
+        {
+            ["tag"] = "socks-in",
+            ["listen"] = "127.0.0.1",
+            ["port"] = settings.SocksPort,
+            ["protocol"] = "socks",
+            ["settings"] = new Dictionary<string, object?> { ["udp"] = true }
+        });
+
+        inbounds.Add(new Dictionary<string, object?>
+        {
+            ["tag"] = "http-in",
+            ["listen"] = "127.0.0.1",
+            ["port"] = settings.HttpPort,
+            ["protocol"] = "http"
+        });
+
         var config = new Dictionary<string, object?>
         {
-            ["log"] = new Dictionary<string, object?> { ["loglevel"] = "warning" },
-            ["inbounds"] = new object[]
+            ["log"] = new Dictionary<string, object?>
             {
-                new Dictionary<string, object?>
-                {
-                    ["tag"] = "socks-in",
-                    ["listen"] = "127.0.0.1",
-                    ["port"] = settings.SocksPort,
-                    ["protocol"] = "socks",
-                    ["settings"] = new Dictionary<string, object?> { ["udp"] = true }
-                },
-                new Dictionary<string, object?>
-                {
-                    ["tag"] = "http-in",
-                    ["listen"] = "127.0.0.1",
-                    ["port"] = settings.HttpPort,
-                    ["protocol"] = "http"
-                }
+                ["loglevel"] = "warning",
+                ["access"] = accessLogPath,
+                ["error"] = errorLogPath
             },
+            ["inbounds"] = inbounds,
             ["outbounds"] = new object[]
             {
                 BuildProxyOutbound(node),
@@ -280,7 +434,13 @@ public sealed class XrayCoreService : IDisposable
             }
         };
 
-        return JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true });
+        return JsonSerializer.Serialize(
+            config,
+            new JsonSerializerOptions
+            {
+                WriteIndented = true,
+                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+            });
     }
 
     private static Dictionary<string, object?> BuildProxyOutbound(ProxyNode node)
@@ -294,13 +454,15 @@ public sealed class XrayCoreService : IDisposable
         switch (node.Protocol.ToLowerInvariant())
         {
             case "vless":
-                var vlessUser = new Dictionary<string, object?>
+            {
+                var user = new Dictionary<string, object?>
                 {
                     ["id"] = node.UserId,
                     ["encryption"] = "none"
                 };
+
                 if (!string.IsNullOrWhiteSpace(node.Flow))
-                    vlessUser["flow"] = node.Flow;
+                    user["flow"] = node.Flow;
 
                 outbound["settings"] = new Dictionary<string, object?>
                 {
@@ -310,12 +472,13 @@ public sealed class XrayCoreService : IDisposable
                         {
                             ["address"] = node.Host,
                             ["port"] = node.Port,
-                            ["users"] = new object[] { vlessUser }
+                            ["users"] = new object[] { user }
                         }
                     }
                 };
                 outbound["streamSettings"] = BuildStreamSettings(node);
                 break;
+            }
 
             case "vmess":
                 outbound["settings"] = new Dictionary<string, object?>
@@ -401,16 +564,21 @@ public sealed class XrayCoreService : IDisposable
         }
         else if (string.Equals(node.Security, "tls", StringComparison.OrdinalIgnoreCase))
         {
-            stream["tlsSettings"] = new Dictionary<string, object?>
+            var tls = new Dictionary<string, object?>
             {
-                ["serverName"] = node.Sni ?? node.Host,
-                ["fingerprint"] = node.Fingerprint
+                ["serverName"] = node.Sni ?? node.Host
             };
+
+            if (!string.IsNullOrWhiteSpace(node.Fingerprint))
+                tls["fingerprint"] = node.Fingerprint;
+
+            stream["tlsSettings"] = tls;
         }
 
         if (string.Equals(node.Network, "ws", StringComparison.OrdinalIgnoreCase))
         {
             var ws = new Dictionary<string, object?> { ["path"] = node.Path ?? "/" };
+
             if (!string.IsNullOrWhiteSpace(node.HostHeader))
             {
                 ws["headers"] = new Dictionary<string, string>
@@ -446,6 +614,11 @@ public sealed class XrayCoreService : IDisposable
 
         var candidate = value.Split('/', 2)[0];
         return IPAddress.TryParse(candidate, out _);
+    }
+
+    private static void TryDelete(string path)
+    {
+        try { File.Delete(path); } catch { }
     }
 
     public void Dispose()
