@@ -69,8 +69,8 @@ public sealed class RoutingInspectorService
                 host,
                 resolved,
                 "DIRECT",
-                "geosite:ru",
-                "Для домена с российской зоной ожидается прямой маршрут.");
+                "Российская доменная зона",
+                "Домены .ru, .su и .рф идут напрямую независимо от GeoSite.");
         }
 
         return new RoutingInspectionResult(
@@ -78,7 +78,7 @@ public sealed class RoutingInspectorService
             resolved,
             "PROXY",
             "Маршрут по умолчанию",
-            "Xray дополнительно проверит geosite:ru и geoip:ru по своим geodata при реальном соединении.");
+            "Xray дополнительно проверит geosite:category-ru и geoip:ru. Если GeoSite недоступен, Rayvia автоматически использует доменный fallback.");
     }
 
     private static async Task<List<IPAddress>> ResolveAsync(string host, CancellationToken cancellationToken)
@@ -124,7 +124,8 @@ public sealed class RoutingInspectorService
             }
         }
 
-        if (value.Equals("geosite:ru", StringComparison.OrdinalIgnoreCase))
+        if (value.Equals("geosite:ru", StringComparison.OrdinalIgnoreCase) ||
+            value.Equals("geosite:category-ru", StringComparison.OrdinalIgnoreCase))
             return LooksRussianDomain(host);
 
         if (value.Equals("geoip:private", StringComparison.OrdinalIgnoreCase))
@@ -154,7 +155,8 @@ public sealed class RoutingInspectorService
     private static bool LooksRussianDomain(string host)
         => host.EndsWith(".ru", StringComparison.OrdinalIgnoreCase)
            || host.EndsWith(".su", StringComparison.OrdinalIgnoreCase)
-           || host.EndsWith(".рф", StringComparison.OrdinalIgnoreCase);
+           || host.EndsWith(".рф", StringComparison.OrdinalIgnoreCase)
+           || host.EndsWith(".xn--p1ai", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsPrivateAddress(IPAddress address)
     {
