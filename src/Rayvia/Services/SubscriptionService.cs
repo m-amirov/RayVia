@@ -12,7 +12,7 @@ public sealed class SubscriptionService
 
     public SubscriptionService()
     {
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("Rayvia/0.2");
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd("Rayvia/0.3");
         _http.Timeout = TimeSpan.FromSeconds(20);
     }
 

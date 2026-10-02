@@ -78,6 +78,7 @@ public partial class MainWindow : Window
         RefreshBindings();
         ApplyRoutingSelection();
         ShowHome();
+        ShowActivityTab(true);
         UpdateConnectionUi(false);
 
         _log.Write("Rayvia запущен.");
@@ -121,26 +122,17 @@ public partial class MainWindow : Window
             RulesList.ItemsSource = null;
             RulesList.ItemsSource = _settings.Rules;
 
-            ServersList.ItemsSource = null;
-            ServersList.ItemsSource = _settings.Nodes;
-
             GroupMemberServerCombo.ItemsSource = null;
             GroupMemberServerCombo.ItemsSource = _settings.Nodes;
 
             var groupChoices = BuildGroupChoices();
-
-            HomeGroupCombo.ItemsSource = groupChoices;
             ServerGroupCombo.ItemsSource = groupChoices;
 
             var selectedGroup = groupChoices.FirstOrDefault(
                                     x => x.Id == (_settings.SelectedGroupId ?? ""))
                                 ?? groupChoices[0];
 
-            HomeGroupCombo.SelectedItem = selectedGroup;
             ServerGroupCombo.SelectedItem = selectedGroup;
-
-            ConnectionModeCombo.SelectedIndex =
-                _settings.ConnectionMode == ConnectionMode.Tun ? 1 : 0;
 
             AutoSelectCheck.IsChecked = _settings.AutoSelectBestServer;
             AutoSelectServersCheck.IsChecked = _settings.AutoSelectBestServer;
@@ -148,7 +140,12 @@ public partial class MainWindow : Window
             RefreshServerChoices();
             RefreshGroupMembers();
 
+            SubscriptionCountText.Text = $"{_settings.Subscriptions.Count} источников";
+            ServerCountText.Text = $"{_settings.Nodes.Count} серверов";
             HomePortText.Text = $"127.0.0.1:{_settings.HttpPort}";
+
+            UpdateConnectionModeButtons();
+            UpdateDashboardSummary();
         }
         finally
         {
@@ -184,39 +181,42 @@ public partial class MainWindow : Window
     private void RefreshServerChoices()
     {
         var candidates = GetCandidateNodes();
-
-        ServerCombo.ItemsSource = null;
-        ServerCombo.ItemsSource = candidates;
-
         var selected = candidates.FirstOrDefault(x => x.Id == _settings.SelectedNodeId)
                        ?? candidates.FirstOrDefault();
 
-        ServerCombo.SelectedItem = selected;
-
-        if (selected is not null && candidates.All(x => x.Id != _settings.SelectedNodeId))
+        if (selected is not null)
             _settings.SelectedNodeId = selected.Id;
+        else if (_settings.Nodes.Count == 0)
+            _settings.SelectedNodeId = null;
+
+        ServersList.ItemsSource = null;
+        ServersList.ItemsSource = candidates;
+        UpdateDashboardSummary();
     }
 
     private void RefreshGroupMembers()
     {
         if (string.IsNullOrWhiteSpace(_settings.SelectedGroupId))
         {
-            GroupMembersTitle.Text = "Все серверы";
-            GroupMembersList.ItemsSource = _settings.Nodes;
+            GroupMembersTitle.Text = "Выберите группу";
+            GroupMembersList.ItemsSource = Array.Empty<ProxyNode>();
+            GroupMembersFooter.Visibility = Visibility.Collapsed;
             return;
         }
 
         var group = _settings.Groups.FirstOrDefault(x => x.Id == _settings.SelectedGroupId);
         if (group is null)
         {
-            GroupMembersTitle.Text = "Состав группы";
+            GroupMembersTitle.Text = "Выберите группу";
             GroupMembersList.ItemsSource = Array.Empty<ProxyNode>();
+            GroupMembersFooter.Visibility = Visibility.Collapsed;
             return;
         }
 
         var ids = group.NodeIds.ToHashSet(StringComparer.Ordinal);
         GroupMembersTitle.Text = group.Name;
         GroupMembersList.ItemsSource = _settings.Nodes.Where(x => ids.Contains(x.Id)).ToList();
+        GroupMembersFooter.Visibility = Visibility.Visible;
     }
 
     private async Task SaveAsync()
@@ -299,8 +299,7 @@ public partial class MainWindow : Window
             }
             else
             {
-                node = ServerCombo.SelectedItem as ProxyNode
-                       ?? candidates.FirstOrDefault(x => x.Id == _settings.SelectedNodeId)
+                node = candidates.FirstOrDefault(x => x.Id == _settings.SelectedNodeId)
                        ?? candidates.FirstOrDefault();
             }
 
@@ -327,11 +326,11 @@ public partial class MainWindow : Window
             _liveConnections.Stop();
             _xray.Disconnect();
             UpdateConnectionUi(false);
-            _log.Write("Ошибка подключения: " + ex.Message);
+            _log.Write("Ошибка подключения: " + ex);
 
             MessageBox.Show(
                 this,
-                ex.Message,
+                GetFriendlyConnectionError(ex),
                 "Не удалось подключиться",
                 MessageBoxButton.OK,
                 MessageBoxImage.Error);
@@ -369,10 +368,54 @@ public partial class MainWindow : Window
                 ? "Не используется"
                 : "Выключен";
 
+        UpdateConnectionModeButtons();
+        UpdateDashboardSummary();
+    }
+
+    private void UpdateDashboardSummary()
+    {
         var active = _settings.Nodes.FirstOrDefault(x => x.Id == _settings.SelectedNodeId);
-        ActiveServerText.Text = active is null
-            ? "Сервер не выбран"
-            : $"{active.Name} · {active.Endpoint}";
+        if (active is null)
+        {
+            ActiveServerText.Text = "Сервер не выбран";
+            ActiveServerMetaText.Text = _settings.Subscriptions.Count == 0
+                ? "Добавьте профиль, чтобы начать"
+                : "Выберите сервер в разделе «Профили»";
+        }
+        else
+        {
+            ActiveServerText.Text = active.Name;
+            var security = string.IsNullOrWhiteSpace(active.Security) || active.Security == "none"
+                ? ""
+                : $" · {active.Security.ToUpperInvariant()}";
+            ActiveServerMetaText.Text =
+                $"{active.Protocol.ToUpperInvariant()}{security} · {active.Endpoint} · {active.LatencyDisplay}";
+        }
+
+        var group = string.IsNullOrWhiteSpace(_settings.SelectedGroupId)
+            ? null
+            : _settings.Groups.FirstOrDefault(x => x.Id == _settings.SelectedGroupId);
+        DashboardGroupText.Text = group?.Name ?? "Все серверы";
+
+        DashboardRoutingText.Text = _settings.RoutingMode switch
+        {
+            RoutingMode.ProxyAll => "Всё через прокси",
+            RoutingMode.DirectAll => "Всё напрямую",
+            _ => "Умная"
+        };
+    }
+
+    private void UpdateConnectionModeButtons()
+    {
+        SetSegmentState(ModeSystemProxyButton, _settings.ConnectionMode == ConnectionMode.SystemProxy);
+        SetSegmentState(ModeTunButton, _settings.ConnectionMode == ConnectionMode.Tun);
+    }
+
+    private void SetSegmentState(Button button, bool active)
+    {
+        button.Background = (Brush)FindResource(active ? "AccentSoftBrush" : "SurfaceBrush");
+        button.Foreground = (Brush)FindResource(active ? "AccentBrush" : "TextBrush");
+        button.BorderBrush = (Brush)FindResource(active ? "AccentBrush" : "BorderBrush");
     }
 
     private async void AddSubscription_Click(object sender, RoutedEventArgs e)
@@ -421,6 +464,7 @@ public partial class MainWindow : Window
         try
         {
             await RefreshSubscriptionAsync(subscription);
+            AddProfilePanel.Visibility = Visibility.Collapsed;
             _log.Write($"Добавлено: {subscription.Name}.");
         }
         catch (Exception ex)
@@ -636,14 +680,6 @@ public partial class MainWindow : Window
         await SaveAsync();
     }
 
-    private async void HomeGroupCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (!_loaded || _refreshingUi || HomeGroupCombo.SelectedItem is not ServerGroup group)
-            return;
-
-        await SelectGroupAsync(group.Id);
-    }
-
     private async void ServerGroupCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
         if (!_loaded || _refreshingUi || ServerGroupCombo.SelectedItem is not ServerGroup group)
@@ -656,6 +692,7 @@ public partial class MainWindow : Window
     {
         _settings.SelectedGroupId = string.IsNullOrWhiteSpace(id) ? null : id;
         RefreshBindings();
+        UpdateDashboardSummary();
         await SaveAsync();
     }
 
@@ -680,14 +717,10 @@ public partial class MainWindow : Window
         await SaveAsync();
     }
 
-    private async void ConnectionModeCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    private async void ConnectionModeButton_Click(object sender, RoutedEventArgs e)
     {
-        if (!_loaded || _refreshingUi ||
-            ConnectionModeCombo.SelectedItem is not ComboBoxItem item ||
-            item.Tag is null)
-            return;
-
-        if (!Enum.TryParse<ConnectionMode>(item.Tag.ToString(), out var mode) ||
+        if (!_loaded || sender is not Button { Tag: string tag } ||
+            !Enum.TryParse<ConnectionMode>(tag, out var mode) ||
             mode == _settings.ConnectionMode)
             return;
 
@@ -696,16 +729,6 @@ public partial class MainWindow : Window
 
         _settings.ConnectionMode = mode;
         UpdateConnectionUi(false);
-        await SaveAsync();
-    }
-
-    private async void ServerCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (!_loaded || _refreshingUi || ServerCombo.SelectedItem is not ProxyNode node)
-            return;
-
-        _settings.SelectedNodeId = node.Id;
-        UpdateConnectionUi(_xray.IsRunning);
         await SaveAsync();
     }
 
@@ -748,6 +771,7 @@ public partial class MainWindow : Window
         if (Enum.TryParse<RoutingMode>(radio.Tag.ToString(), out var mode))
         {
             _settings.RoutingMode = mode;
+            UpdateDashboardSummary();
             await SaveAsync();
         }
     }
@@ -898,7 +922,7 @@ public partial class MainWindow : Window
     private static Version CurrentVersion()
     {
         var version = Assembly.GetExecutingAssembly().GetName().Version
-                      ?? new Version(0, 2, 1);
+                      ?? new Version(0, 3, 0);
 
         return new Version(
             version.Major,
@@ -909,37 +933,38 @@ public partial class MainWindow : Window
     private void Home_Click(object sender, RoutedEventArgs e)
         => ShowHome();
 
-    private void Subscriptions_Click(object sender, RoutedEventArgs e)
-        => ShowPage(SubscriptionsPage, "Подписки", "Источники серверов");
-
-    private void Servers_Click(object sender, RoutedEventArgs e)
-        => ShowPage(ServersPage, "Серверы", "Задержка, группы и автовыбор");
+    private void Profiles_Click(object sender, RoutedEventArgs e)
+        => ShowProfiles();
 
     private void Routing_Click(object sender, RoutedEventArgs e)
         => ShowPage(RoutingPage, "Маршрутизация", "Правила и проверка маршрута");
 
-    private void Connections_Click(object sender, RoutedEventArgs e)
-        => ShowPage(ConnectionsPage, "Соединения", "Трафик, который видит Xray");
-
-    private void Logs_Click(object sender, RoutedEventArgs e)
-        => ShowPage(LogsPage, "Журнал", "События Rayvia и Xray");
+    private void Activity_Click(object sender, RoutedEventArgs e)
+        => ShowPage(ActivityPage, "Активность", "Соединения и журнал Xray");
 
     private void Settings_Click(object sender, RoutedEventArgs e)
         => ShowPage(SettingsPage, "Настройки", "Обновления и локальные порты");
 
+    private void OpenProfiles_Click(object sender, RoutedEventArgs e)
+        => ShowProfiles();
+
+    private void OpenRouting_Click(object sender, RoutedEventArgs e)
+        => ShowPage(RoutingPage, "Маршрутизация", "Правила и проверка маршрута");
+
     private void ShowHome()
-        => ShowPage(HomePage, "Главная", "Подключение и состояние");
+        => ShowPage(HomePage, "Главная", "Подключение");
+
+    private void ShowProfiles()
+        => ShowPage(ProfilesPage, "Профили", "Источники, серверы и группы");
 
     private void ShowPage(FrameworkElement page, string title, string subtitle)
     {
         foreach (var item in new FrameworkElement[]
                  {
                      HomePage,
-                     SubscriptionsPage,
-                     ServersPage,
+                     ProfilesPage,
                      RoutingPage,
-                     ConnectionsPage,
-                     LogsPage,
+                     ActivityPage,
                      SettingsPage
                  })
         {
@@ -958,11 +983,9 @@ public partial class MainWindow : Window
         var buttons = new[]
         {
             NavHomeButton,
-            NavSubscriptionsButton,
-            NavServersButton,
+            NavProfilesButton,
             NavRoutingButton,
-            NavConnectionsButton,
-            NavLogsButton,
+            NavActivityButton,
             NavSettingsButton
         };
 
@@ -974,20 +997,79 @@ public partial class MainWindow : Window
 
         var active = NavHomeButton;
 
-        if (page == SubscriptionsPage)
-            active = NavSubscriptionsButton;
-        else if (page == ServersPage)
-            active = NavServersButton;
+        if (page == ProfilesPage)
+            active = NavProfilesButton;
         else if (page == RoutingPage)
             active = NavRoutingButton;
-        else if (page == ConnectionsPage)
-            active = NavConnectionsButton;
-        else if (page == LogsPage)
-            active = NavLogsButton;
+        else if (page == ActivityPage)
+            active = NavActivityButton;
         else if (page == SettingsPage)
             active = NavSettingsButton;
 
         active.Background = (Brush)FindResource("SidebarSelectedBrush");
         active.Foreground = (Brush)FindResource("SidebarTextBrush");
+    }
+
+    private void ToggleAddProfile_Click(object sender, RoutedEventArgs e)
+    {
+        GroupToolsPanel.Visibility = Visibility.Collapsed;
+        AddProfilePanel.Visibility = AddProfilePanel.Visibility == Visibility.Visible
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+
+        if (AddProfilePanel.Visibility == Visibility.Visible)
+        {
+            SubscriptionUrlText.Focus();
+            SubscriptionUrlText.SelectAll();
+        }
+    }
+
+    private void CancelAddProfile_Click(object sender, RoutedEventArgs e)
+    {
+        AddProfilePanel.Visibility = Visibility.Collapsed;
+        SubscriptionUrlText.Clear();
+    }
+
+    private void ToggleGroupTools_Click(object sender, RoutedEventArgs e)
+    {
+        AddProfilePanel.Visibility = Visibility.Collapsed;
+        GroupToolsPanel.Visibility = GroupToolsPanel.Visibility == Visibility.Visible
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+    }
+
+    private void ActivityConnections_Click(object sender, RoutedEventArgs e)
+        => ShowActivityTab(true);
+
+    private void ActivityLogs_Click(object sender, RoutedEventArgs e)
+        => ShowActivityTab(false);
+
+    private void ShowActivityTab(bool connections)
+    {
+        ConnectionsPanel.Visibility = connections ? Visibility.Visible : Visibility.Collapsed;
+        LogsPanel.Visibility = connections ? Visibility.Collapsed : Visibility.Visible;
+        SetSegmentState(ActivityConnectionsButton, connections);
+        SetSegmentState(ActivityLogsButton, !connections);
+    }
+
+    private static string GetFriendlyConnectionError(Exception exception)
+    {
+        var message = exception.Message;
+
+        if (message.Contains("Сервер не выбран", StringComparison.OrdinalIgnoreCase))
+            return message;
+
+        if (message.Contains("права администратора", StringComparison.OrdinalIgnoreCase))
+            return message;
+
+        if (message.Contains("Xray core", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("скач", StringComparison.OrdinalIgnoreCase))
+            return message;
+
+        if (message.Contains("конфигурац", StringComparison.OrdinalIgnoreCase) &&
+            !message.Contains("infra/conf", StringComparison.OrdinalIgnoreCase))
+            return message;
+
+        return "Не удалось установить соединение. Подробности записаны в «Активность → Журнал».";
     }
 }

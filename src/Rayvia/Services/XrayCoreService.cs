@@ -34,7 +34,7 @@ public sealed class XrayCoreService : IDisposable
     public XrayCoreService(LogService log)
     {
         _log = log;
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("Rayvia/0.2");
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd("Rayvia/0.3");
         _http.Timeout = TimeSpan.FromSeconds(60);
     }
 
@@ -51,11 +51,52 @@ public sealed class XrayCoreService : IDisposable
         TryDelete(ErrorLogPath);
 
         var configPath = Path.Combine(_coreDirectory, "rayvia-config.json");
-        var config = BuildConfig(node, settings, AccessLogPath, ErrorLogPath);
-        await File.WriteAllTextAsync(configPath, config);
-
         var executable = Path.Combine(_coreDirectory, "xray.exe");
-        await ValidateConfigAsync(executable, configPath);
+
+        var includeCommunityRuList = settings.RoutingMode == RoutingMode.Smart;
+        var includeRuGeoIp = settings.RoutingMode == RoutingMode.Smart;
+
+        ConfigValidationResult validation;
+
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            var config = BuildConfig(
+                node,
+                settings,
+                AccessLogPath,
+                ErrorLogPath,
+                includeCommunityRuList,
+                includeRuGeoIp);
+
+            await File.WriteAllTextAsync(configPath, config);
+            validation = await ValidateConfigAsync(executable, configPath);
+
+            if (validation.Success)
+                goto ConfigValidated;
+
+            if (includeCommunityRuList && IsGeositeLoadError(validation.Detail))
+            {
+                includeCommunityRuList = false;
+                _log.Write("Smart Routing: geosite:category-ru недоступен, используется встроенный доменный fallback.");
+                continue;
+            }
+
+            if (includeRuGeoIp && IsGeoIpLoadError(validation.Detail))
+            {
+                includeRuGeoIp = false;
+                _log.Write("Smart Routing: geoip:ru недоступен, маршрут продолжит работать по доменным правилам.");
+                continue;
+            }
+
+            _log.Write("Xray config validation: " + validation.Detail);
+            throw new InvalidOperationException(
+                "Xray не принял конфигурацию. Подробности записаны в «Активность → Журнал».");
+        }
+
+        throw new InvalidOperationException(
+            "Не удалось подготовить маршрутизацию Xray. Подробности записаны в «Активность → Журнал».");
+
+ConfigValidated:
 
         _process = new Process
         {
@@ -97,10 +138,11 @@ public sealed class XrayCoreService : IDisposable
         if (_process.HasExited)
         {
             var error = ReadLastError();
+            if (!string.IsNullOrWhiteSpace(error))
+                _log.Write("Xray startup error: " + error);
+
             throw new InvalidOperationException(
-                string.IsNullOrWhiteSpace(error)
-                    ? "Xray завершился сразу после запуска."
-                    : $"Xray завершился сразу после запуска. {error}");
+                "Xray завершился при запуске. Подробности записаны в «Активность → Журнал».");
         }
 
         _log.Write(
@@ -216,7 +258,9 @@ public sealed class XrayCoreService : IDisposable
         }
     }
 
-    private static async Task ValidateConfigAsync(string executable, string configPath)
+    private static async Task<ConfigValidationResult> ValidateConfigAsync(
+        string executable,
+        string configPath)
     {
         using var process = new Process
         {
@@ -246,26 +290,35 @@ public sealed class XrayCoreService : IDisposable
         catch (OperationCanceledException)
         {
             try { process.Kill(true); } catch { }
-            throw new InvalidOperationException("Проверка конфигурации Xray не завершилась.");
+            return new ConfigValidationResult(
+                false,
+                "Проверка конфигурации Xray не завершилась за отведённое время.");
         }
 
         var stdout = await stdoutTask;
         var stderr = await stderrTask;
-
-        if (process.ExitCode == 0)
-            return;
-
         var detail = string.Join(
             " ",
             new[] { stderr, stdout }
                 .Where(x => !string.IsNullOrWhiteSpace(x))
                 .Select(x => x.Trim()));
 
-        throw new InvalidOperationException(
-            string.IsNullOrWhiteSpace(detail)
-                ? "Xray отклонил конфигурацию."
-                : $"Xray отклонил конфигурацию: {detail}");
+        return new ConfigValidationResult(process.ExitCode == 0, detail);
     }
+
+    private static bool IsGeositeLoadError(string detail)
+        => detail.Contains("geosite", StringComparison.OrdinalIgnoreCase)
+           && (detail.Contains("failed to load", StringComparison.OrdinalIgnoreCase)
+               || detail.Contains("code not found", StringComparison.OrdinalIgnoreCase)
+               || detail.Contains("category-ru", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsGeoIpLoadError(string detail)
+        => detail.Contains("geoip", StringComparison.OrdinalIgnoreCase)
+           && (detail.Contains("failed to load", StringComparison.OrdinalIgnoreCase)
+               || detail.Contains("code not found", StringComparison.OrdinalIgnoreCase)
+               || detail.Contains("geoip:ru", StringComparison.OrdinalIgnoreCase));
+
+    private sealed record ConfigValidationResult(bool Success, string Detail);
 
     private string ReadLastError()
     {
@@ -288,7 +341,9 @@ public sealed class XrayCoreService : IDisposable
         ProxyNode node,
         AppSettings settings,
         string accessLogPath,
-        string errorLogPath)
+        string errorLogPath,
+        bool includeCommunityRuList,
+        bool includeRuGeoIp)
     {
         var rules = new List<object>();
 
@@ -330,17 +385,48 @@ public sealed class XrayCoreService : IDisposable
 
         if (settings.RoutingMode == RoutingMode.Smart)
         {
+            // Private networks never depend on external geodata.
             rules.Add(new Dictionary<string, object?>
             {
                 ["type"] = "field",
-                ["ip"] = new[] { "geoip:private", "geoip:ru" },
+                ["ip"] = new[]
+                {
+                    "10.0.0.0/8",
+                    "172.16.0.0/12",
+                    "192.168.0.0/16",
+                    "127.0.0.0/8",
+                    "169.254.0.0/16",
+                    "::1/128",
+                    "fc00::/7",
+                    "fe80::/10"
+                },
                 ["outboundTag"] = "direct"
             });
+
+            if (includeRuGeoIp)
+            {
+                rules.Add(new Dictionary<string, object?>
+                {
+                    ["type"] = "field",
+                    ["ip"] = new[] { "geoip:ru" },
+                    ["outboundTag"] = "direct"
+                });
+            }
+
+            var russianDomains = new List<string>
+            {
+                "domain:ru",
+                "domain:su",
+                "domain:xn--p1ai"
+            };
+
+            if (includeCommunityRuList)
+                russianDomains.Add("geosite:category-ru");
 
             rules.Add(new Dictionary<string, object?>
             {
                 ["type"] = "field",
-                ["domain"] = new[] { "geosite:ru" },
+                ["domain"] = russianDomains,
                 ["outboundTag"] = "direct"
             });
         }

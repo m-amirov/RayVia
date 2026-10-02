@@ -8,7 +8,7 @@
     <UseWPF>true</UseWPF>
     <AssemblyName>Rayvia</AssemblyName>
     <RootNamespace>Rayvia</RootNamespace>
-    <Version>0.2.1</Version>
+    <Version>0.3.0</Version>
     <Authors>Rayvia</Authors>
     <Description>Universal proxy client for Windows.</Description>
     <ApplicationIcon>Assets\rayvia.ico</ApplicationIcon>
