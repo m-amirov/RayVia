@@ -50,12 +50,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view "${{ steps.version.outputs.tag }}" --repo "${{ github.repository }}" *> $null
-          if ($LASTEXITCODE -eq 0) {
+          $exists = $LASTEXITCODE -eq 0
+
+          if ($exists) {
             "skip=true" >> $env:GITHUB_OUTPUT
             Write-Host "Release ${{ steps.version.outputs.tag }} already exists."
           } else {
             "skip=false" >> $env:GITHUB_OUTPUT
+            Write-Host "Release ${{ steps.version.outputs.tag }} will be created."
           }
+
+          # gh returns exit code 1 when a release does not exist. That is expected here.
+          exit 0
 
       - name: Setup .NET
         if: steps.existing.outputs.skip != 'true'
