@@ -49,12 +49,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release view "${{ steps.version.outputs.tag }}" --repo "${{ github.repository }}" *> $null
-          if ($LASTEXITCODE -eq 0) {
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = "application/vnd.github+json"
+            "User-Agent" = "Rayvia-Release"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $tag = "${{ steps.version.outputs.tag }}"
+          $repo = "${{ github.repository }}"
+          $response = Invoke-WebRequest -Uri "https://api.github.com/repos/$repo/releases/tags/$tag" -Headers $headers -SkipHttpErrorCheck
+          if ($response.StatusCode -eq 200) {
             "skip=true" >> $env:GITHUB_OUTPUT
-            Write-Host "Release ${{ steps.version.outputs.tag }} already exists."
-          } else {
+            Write-Host "Release $tag already exists."
+          } elseif ($response.StatusCode -eq 404) {
             "skip=false" >> $env:GITHUB_OUTPUT
+          } else {
+            throw "GitHub release lookup failed with HTTP $($response.StatusCode)."
           }
 
       - name: Setup .NET
