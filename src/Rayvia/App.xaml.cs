@@ -1,11 +1,14 @@
 using System.IO;
 using System.Windows;
 using System.Windows.Threading;
+using Rayvia.Services;
 
 namespace Rayvia;
 
 public partial class App : Application
 {
+    private SingleInstanceService? _singleInstance;
+
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
@@ -13,6 +16,43 @@ public partial class App : Application
 
         try
         {
+            _singleInstance = new SingleInstanceService();
+            if (!_singleInstance.TryAcquire())
+            {
+                _ = SingleInstanceService.SendCommandAsync(
+                    new InstanceCommand("activate", e.Args),
+                    TimeSpan.FromMilliseconds(500));
+                Shutdown(0);
+                return;
+            }
+
+            var recoveryLog = new LogService();
+            var recoveryProxy = new SystemProxyService(log: recoveryLog);
+            var recovery = new CrashRecoveryService(
+                new RuntimeStateService(),
+                recoveryProxy,
+                new XrayProcessSupervisor(recoveryLog),
+                Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "Rayvia",
+                    "Core"),
+                recoveryLog);
+            recovery.RecoverAsync().GetAwaiter().GetResult();
+
+            _singleInstance.CommandReceived += (_, args) =>
+            {
+                if (MainWindow is not MainWindow window)
+                    return;
+
+                Dispatcher.BeginInvoke(() =>
+                {
+                    if (window.WindowState == WindowState.Minimized)
+                        window.WindowState = WindowState.Normal;
+                    window.Activate();
+                });
+            };
+            Exit += (_, _) => _singleInstance?.Dispose();
+
             var autoConnect = e.Args.Any(x => string.Equals(x, "--autoconnect", StringComparison.OrdinalIgnoreCase));
             var window = new MainWindow(autoConnect);
             MainWindow = window;

@@ -79,7 +79,8 @@ Rayvia использует встроенный TUN-inbound Xray и Wintun.
 
 ## Xray core
 
-При первом подключении Rayvia загружает `Xray-windows-64.zip` из последнего официального релиза XTLS/Xray-core.
+При первом подключении Rayvia загружает закреплённый релиз Xray (`v26.3.27`) из официального репозитория XTLS/Xray-core.
+Перед распаковкой скачивается официальный asset `Xray-windows-64.zip.dgst`; SHA2-256 обязателен и проверяется до staging/install. При отсутствии или повреждении digest установка завершается fail-closed.
 
 Файлы хранятся в:
 
@@ -121,3 +122,9 @@ dotnet publish src/Rayvia/Rayvia.csproj -c Release -r win-x64 --self-contained t
 `%APPDATA%\Rayvia\settings.json`
 
 URL подписки может содержать секрет. Не публикуйте `settings.json`.
+
+Runtime recovery:
+
+`%LOCALAPPDATA%\Rayvia\runtime-state.json`
+
+На старте Rayvia проверяет stale runtime state и orphan `xray.exe`, принадлежащий только каталогу Rayvia, восстанавливает System Proxy по полному ownership state и удаляет runtime marker идемпотентно.

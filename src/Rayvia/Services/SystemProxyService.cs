@@ -1,192 +1,89 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Win32;
 
 namespace Rayvia.Services;
 
-public sealed class SystemProxyService
+public sealed record ProxySettingsSnapshot(bool Exists, string? Kind, string? Value)
+{
+    public static ProxySettingsSnapshot Missing { get; } = new(false, null, null);
+}
+
+public sealed record ProxySettings(
+    ProxySettingsSnapshot ProxyEnable,
+    ProxySettingsSnapshot ProxyServer,
+    ProxySettingsSnapshot ProxyOverride)
+{
+    public static ProxySettings Empty { get; } = new(
+        ProxySettingsSnapshot.Missing,
+        ProxySettingsSnapshot.Missing,
+        ProxySettingsSnapshot.Missing);
+}
+
+public interface IProxySettingsStore
+{
+    ProxySettings Read();
+    void Write(ProxySettings settings);
+    void Refresh();
+}
+
+public sealed class WindowsProxySettingsStore : IProxySettingsStore
 {
     private const int InternetOptionSettingsChanged = 39;
     private const int InternetOptionRefresh = 37;
 
-    private static readonly string StateDirectory = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Rayvia");
-
-    private static readonly string BackupPath = Path.Combine(
-        StateDirectory,
-        "system-proxy-backup.json");
-
-    [System.Runtime.InteropServices.DllImport("wininet.dll", SetLastError = true)]
+    [DllImport("wininet.dll", SetLastError = true)]
     private static extern bool InternetSetOption(
         IntPtr hInternet,
         int dwOption,
         IntPtr lpBuffer,
         int dwBufferLength);
 
-    public void Enable(int httpPort)
+    public ProxySettings Read()
     {
-        if (httpPort is < 1 or > 65535)
-            throw new ArgumentOutOfRangeException(nameof(httpPort));
-
-        using var key = OpenInternetSettings(writeable: true);
-        var target = $"127.0.0.1:{httpPort}";
-
-        var backup = LoadBackup();
-
-        if (backup is null)
-        {
-            backup = CreateBackup(key);
-            Directory.CreateDirectory(StateDirectory);
-        }
-
-        backup.RayviaProxyServer = target;
-        SaveBackup(backup);
-
-        // Windows' manual proxy UI expects a single host:port value when one
-        // proxy endpoint is used for both HTTP requests and HTTPS CONNECT.
-        // Xray's HTTP inbound supports both.
-        key.SetValue("ProxyEnable", 1, RegistryValueKind.DWord);
-        key.SetValue("ProxyServer", target, RegistryValueKind.String);
-        key.SetValue(
-            "ProxyOverride",
-            "<local>;localhost;127.*;[::1]",
-            RegistryValueKind.String);
-
-        Refresh();
+        using var key = OpenInternetSettings(writeable: false);
+        return new ProxySettings(
+            CaptureValue(key, "ProxyEnable"),
+            CaptureValue(key, "ProxyServer"),
+            CaptureValue(key, "ProxyOverride"));
     }
 
-    public void Disable()
+    public void Write(ProxySettings settings)
     {
         using var key = OpenInternetSettings(writeable: true);
-        var backup = LoadBackup();
+        RestoreValue(key, "ProxyEnable", settings.ProxyEnable);
+        RestoreValue(key, "ProxyServer", settings.ProxyServer);
+        RestoreValue(key, "ProxyOverride", settings.ProxyOverride);
+    }
 
-        if (backup is null)
-        {
-            // Compatibility cleanup for the malformed value written by
-            // Rayvia <= 0.3.0. We cannot recover settings that were already
-            // overwritten by those versions, but we can safely turn them off.
-            var current = key.GetValue("ProxyServer") as string;
-            if (IsLegacyRayviaProxy(current))
-            {
-                key.SetValue("ProxyEnable", 0, RegistryValueKind.DWord);
-                Refresh();
-            }
-
-            return;
-        }
-
-        var currentServer = key.GetValue("ProxyServer") as string;
-
-        // If the user or another application changed Windows proxy settings
-        // after Rayvia enabled them, do not overwrite those newer settings.
-        if (!string.Equals(
-                currentServer?.Trim(),
-                backup.RayviaProxyServer,
-                StringComparison.OrdinalIgnoreCase))
-        {
-            DeleteBackup();
-            return;
-        }
-
-        RestoreValue(key, "ProxyEnable", backup.ProxyEnable);
-        RestoreValue(key, "ProxyServer", backup.ProxyServer);
-        RestoreValue(key, "ProxyOverride", backup.ProxyOverride);
-
-        DeleteBackup();
-        Refresh();
+    public void Refresh()
+    {
+        if (!InternetSetOption(IntPtr.Zero, InternetOptionSettingsChanged, IntPtr.Zero, 0))
+            throw new InvalidOperationException("InternetSetOption(SettingsChanged) завершился с ошибкой.");
+        if (!InternetSetOption(IntPtr.Zero, InternetOptionRefresh, IntPtr.Zero, 0))
+            throw new InvalidOperationException("InternetSetOption(Refresh) завершился с ошибкой.");
     }
 
     private static RegistryKey OpenInternetSettings(bool writeable)
         => Registry.CurrentUser.OpenSubKey(
-               @"Software\Microsoft\Windows\CurrentVersion\Internet Settings",
-               writeable)
+               @"Software\Microsoft\Windows\CurrentVersion\Internet Settings", writeable)
            ?? throw new InvalidOperationException(
                "Не удалось открыть настройки системного прокси Windows.");
 
-    private static ProxyBackup CreateBackup(RegistryKey key)
+    private static ProxySettingsSnapshot CaptureValue(RegistryKey key, string name)
     {
-        var currentServer = key.GetValue("ProxyServer") as string;
-
-        // Rayvia <= 0.3.0 wrote a per-protocol string that Windows 11 displays
-        // incorrectly in the manual proxy UI. Do not preserve that broken
-        // Rayvia value as the user's original configuration.
-        if (IsLegacyRayviaProxy(currentServer))
-        {
-            return new ProxyBackup
-            {
-                ProxyEnable = new RegistryValueSnapshot
-                {
-                    Exists = true,
-                    Kind = RegistryValueKind.DWord.ToString(),
-                    Value = "0"
-                },
-                ProxyServer = new RegistryValueSnapshot { Exists = false },
-                ProxyOverride = new RegistryValueSnapshot { Exists = false }
-            };
-        }
-
-        return new ProxyBackup
-        {
-            ProxyEnable = CaptureValue(key, "ProxyEnable"),
-            ProxyServer = CaptureValue(key, "ProxyServer"),
-            ProxyOverride = CaptureValue(key, "ProxyOverride")
-        };
+        var value = key.GetValue(name, null, RegistryValueOptions.DoNotExpandEnvironmentNames);
+        return value is null
+            ? ProxySettingsSnapshot.Missing
+            : new ProxySettingsSnapshot(true, key.GetValueKind(name).ToString(), value.ToString());
     }
 
-    private static void SaveBackup(ProxyBackup backup)
-    {
-        File.WriteAllText(
-            BackupPath,
-            JsonSerializer.Serialize(
-                backup,
-                new JsonSerializerOptions { WriteIndented = true }));
-    }
-
-    private static ProxyBackup? LoadBackup()
-    {
-        try
-        {
-            if (!File.Exists(BackupPath))
-                return null;
-
-            return JsonSerializer.Deserialize<ProxyBackup>(
-                File.ReadAllText(BackupPath));
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private static RegistryValueSnapshot CaptureValue(
-        RegistryKey key,
-        string name)
-    {
-        var value = key.GetValue(
-            name,
-            null,
-            RegistryValueOptions.DoNotExpandEnvironmentNames);
-
-        if (value is null)
-            return new RegistryValueSnapshot { Exists = false };
-
-        return new RegistryValueSnapshot
-        {
-            Exists = true,
-            Kind = key.GetValueKind(name).ToString(),
-            Value = value.ToString()
-        };
-    }
-
-    private static void RestoreValue(
-        RegistryKey key,
-        string name,
-        RegistryValueSnapshot snapshot)
+    private static void RestoreValue(RegistryKey key, string name, ProxySettingsSnapshot snapshot)
     {
         if (!snapshot.Exists)
         {
-            try { key.DeleteValue(name, throwOnMissingValue: false); } catch { }
+            key.DeleteValue(name, throwOnMissingValue: false);
             return;
         }
 
@@ -199,57 +96,155 @@ public sealed class SystemProxyService
             RegistryValueKind.QWord when long.TryParse(snapshot.Value, out var qword) => qword,
             _ => snapshot.Value ?? string.Empty
         };
-
         key.SetValue(name, value, kind);
     }
+}
 
-    private static bool IsLegacyRayviaProxy(string? value)
+public interface IProxyBackupStore
+{
+    ProxyOwnershipSnapshot? Load();
+    void Save(ProxyOwnershipSnapshot snapshot);
+    void Delete();
+}
+
+public sealed record ProxyOwnershipSnapshot(
+    string SessionId,
+    ProxySettings Original,
+    ProxySettings Applied);
+
+public sealed class FileProxyBackupStore : IProxyBackupStore
+{
+    private readonly string _path;
+    private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
+
+    public FileProxyBackupStore(string? path = null)
     {
-        if (string.IsNullOrWhiteSpace(value))
+        _path = path ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Rayvia", "system-proxy-backup.json");
+    }
+
+    public ProxyOwnershipSnapshot? Load()
+    {
+        try
+        {
+            return File.Exists(_path)
+                ? JsonSerializer.Deserialize<ProxyOwnershipSnapshot>(File.ReadAllText(_path), JsonOptions)
+                : null;
+        }
+        catch { return null; }
+    }
+
+    public void Save(ProxyOwnershipSnapshot snapshot)
+    {
+        var directory = Path.GetDirectoryName(_path);
+        if (!string.IsNullOrWhiteSpace(directory))
+            Directory.CreateDirectory(directory);
+
+        var temp = _path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough))
+            {
+                JsonSerializer.Serialize(stream, snapshot, JsonOptions);
+                stream.Flush(flushToDisk: true);
+            }
+
+            if (File.Exists(_path))
+                File.Replace(temp, _path, null, ignoreMetadataErrors: true);
+            else
+                File.Move(temp, _path);
+        }
+        finally { try { File.Delete(temp); } catch { } }
+    }
+
+    public void Delete() { try { File.Delete(_path); } catch { } }
+}
+
+public interface ISystemProxyService
+{
+    string? AppliedProxyServer { get; }
+    void Enable(int httpPort);
+    bool Disable();
+    bool RecoverStaleState();
+}
+
+public sealed class SystemProxyService : ISystemProxyService
+{
+    private readonly IProxySettingsStore _settingsStore;
+    private readonly IProxyBackupStore _backupStore;
+    private readonly LogService? _log;
+    private readonly string _sessionId;
+
+    public SystemProxyService(
+        IProxySettingsStore? settingsStore = null,
+        IProxyBackupStore? backupStore = null,
+        LogService? log = null,
+        string? sessionId = null)
+    {
+        _settingsStore = settingsStore ?? new WindowsProxySettingsStore();
+        _backupStore = backupStore ?? new FileProxyBackupStore();
+        _log = log;
+        _sessionId = sessionId ?? Guid.NewGuid().ToString("N");
+    }
+
+    public string? AppliedProxyServer => _backupStore.Load()?.Applied.ProxyServer.Value;
+
+    public void Enable(int httpPort)
+    {
+        if (httpPort is < 1 or > 65535)
+            throw new ArgumentOutOfRangeException(nameof(httpPort));
+
+        var current = _settingsStore.Read();
+        var existing = _backupStore.Load();
+        if (existing is null || !IsOwnedState(current, existing.Applied))
+        {
+            var target = CreateAppliedState($"127.0.0.1:{httpPort}");
+            _backupStore.Save(new ProxyOwnershipSnapshot(_sessionId, current, target));
+            existing = new ProxyOwnershipSnapshot(_sessionId, current, target);
+        }
+
+        var applied = existing.Applied with
+        {
+            ProxyServer = new ProxySettingsSnapshot(true, "String", $"127.0.0.1:{httpPort}")
+        };
+        _settingsStore.Write(applied);
+        _settingsStore.Refresh();
+        _backupStore.Save(existing with { SessionId = _sessionId, Applied = applied });
+        _log?.Write($"System Proxy включён: {applied.ProxyServer.Value}.");
+    }
+
+    public bool Disable()
+    {
+        var ownership = _backupStore.Load();
+        if (ownership is null)
+            return true;
+
+        var current = _settingsStore.Read();
+        if (!IsOwnedState(current, ownership.Applied))
+        {
+            _backupStore.Delete();
+            _log?.Write("System Proxy не восстановлен: настройки изменены внешним процессом.");
             return false;
+        }
 
-        var normalized = value.Trim();
-
-        return normalized.StartsWith(
-                   "http=127.0.0.1:",
-                   StringComparison.OrdinalIgnoreCase)
-               && normalized.Contains(
-                   ";https=127.0.0.1:",
-                   StringComparison.OrdinalIgnoreCase);
+        _settingsStore.Write(ownership.Original);
+        _settingsStore.Refresh();
+        _backupStore.Delete();
+        _log?.Write("System Proxy восстановлен.");
+        return true;
     }
 
-    private static void DeleteBackup()
-    {
-        try { File.Delete(BackupPath); } catch { }
-    }
+    public bool RecoverStaleState() => Disable();
 
-    private static void Refresh()
-    {
-        InternetSetOption(
-            IntPtr.Zero,
-            InternetOptionSettingsChanged,
-            IntPtr.Zero,
-            0);
+    public static ProxySettings CreateAppliedState(string proxyServer)
+        => new(
+            new ProxySettingsSnapshot(true, "DWord", "1"),
+            new ProxySettingsSnapshot(true, "String", proxyServer),
+            new ProxySettingsSnapshot(true, "String", "<local>;localhost;127.*;[::1]"));
 
-        InternetSetOption(
-            IntPtr.Zero,
-            InternetOptionRefresh,
-            IntPtr.Zero,
-            0);
-    }
-
-    private sealed class ProxyBackup
-    {
-        public string? RayviaProxyServer { get; set; }
-        public RegistryValueSnapshot ProxyEnable { get; set; } = new();
-        public RegistryValueSnapshot ProxyServer { get; set; } = new();
-        public RegistryValueSnapshot ProxyOverride { get; set; } = new();
-    }
-
-    private sealed class RegistryValueSnapshot
-    {
-        public bool Exists { get; set; }
-        public string? Kind { get; set; }
-        public string? Value { get; set; }
-    }
+    public static bool IsOwnedState(ProxySettings current, ProxySettings applied)
+        => Equals(current.ProxyEnable, applied.ProxyEnable)
+           && Equals(current.ProxyServer, applied.ProxyServer)
+           && Equals(current.ProxyOverride, applied.ProxyOverride);
 }
