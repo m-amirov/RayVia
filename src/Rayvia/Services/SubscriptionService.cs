@@ -16,7 +16,10 @@ public sealed class SubscriptionService
 
     public async Task<List<ProxyNode>> RefreshAsync(SubscriptionDefinition subscription)
     {
-        var payload = await _http.GetStringAsync(subscription.Url);
+        var source = subscription.Url.Trim();
+        var payload = IsNodeLink(source)
+            ? source
+            : await _http.GetStringAsync(source);
         var normalized = NormalizePayload(payload);
         var nodes = new List<ProxyNode>();
 
@@ -42,6 +45,12 @@ public sealed class SubscriptionService
         subscription.LastUpdated = DateTimeOffset.Now;
         return nodes;
     }
+
+    private static bool IsNodeLink(string value)
+        => value.StartsWith("vless://", StringComparison.OrdinalIgnoreCase)
+           || value.StartsWith("vmess://", StringComparison.OrdinalIgnoreCase)
+           || value.StartsWith("trojan://", StringComparison.OrdinalIgnoreCase)
+           || value.StartsWith("ss://", StringComparison.OrdinalIgnoreCase);
 
     private static string NormalizePayload(string payload)
     {
