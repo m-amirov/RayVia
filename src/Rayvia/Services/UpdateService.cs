@@ -17,7 +17,7 @@ public sealed class UpdateService
 
     public UpdateService()
     {
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("Rayvia-Updater/0.3");
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd("Rayvia-Updater/0.3.1");
         _http.Timeout = TimeSpan.FromSeconds(45);
     }
 
