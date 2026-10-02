@@ -75,7 +75,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $args = @(
+          $ghArgs = @(
             "release", "create", "${{ steps.version.outputs.tag }}",
             "artifacts/Rayvia-Setup-x64.exe",
             "artifacts/SHA256SUMS.txt",
@@ -83,6 +83,6 @@ jobs:
             "--generate-notes"
           )
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $args += @("--target", "${{ github.sha }}")
+            $ghArgs += @("--target", "${{ github.sha }}")
           }
-          gh @args
+          gh @ghArgs
