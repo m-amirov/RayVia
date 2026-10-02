@@ -2,17 +2,21 @@ name: Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       version:
-        description: "Version, for example 0.1.0"
-        required: true
+        description: "Version override, for example 0.1.1"
+        required: false
         type: string
 
 permissions:
   contents: write
+
+concurrency:
+  group: rayvia-release
+  cancel-in-progress: false
 
 jobs:
   release:
@@ -26,20 +30,41 @@ jobs:
         id: version
         shell: pwsh
         run: |
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $version = "${{ inputs.version }}"
+          $override = "${{ inputs.version }}"
+          if (-not [string]::IsNullOrWhiteSpace($override)) {
+            $version = $override.Trim().TrimStart("v")
           } else {
-            $version = "${{ github.ref_name }}".TrimStart("v")
+            [xml]$project = Get-Content "src/Rayvia/Rayvia.csproj"
+            $version = [string]($project.Project.PropertyGroup.Version | Select-Object -First 1)
+          }
+          if ([string]::IsNullOrWhiteSpace($version)) {
+            throw "Could not resolve application version."
           }
           "version=$version" >> $env:GITHUB_OUTPUT
           "tag=v$version" >> $env:GITHUB_OUTPUT
 
+      - name: Check existing release
+        id: existing
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ steps.version.outputs.tag }}" --repo "${{ github.repository }}" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            "skip=true" >> $env:GITHUB_OUTPUT
+            Write-Host "Release ${{ steps.version.outputs.tag }} already exists."
+          } else {
+            "skip=false" >> $env:GITHUB_OUTPUT
+          }
+
       - name: Setup .NET
+        if: steps.existing.outputs.skip != 'true'
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
 
       - name: Publish
+        if: steps.existing.outputs.skip != 'true'
         shell: pwsh
         run: |
           dotnet publish src/Rayvia/Rayvia.csproj `
@@ -52,10 +77,12 @@ jobs:
             -o publish
 
       - name: Install Inno Setup
+        if: steps.existing.outputs.skip != 'true'
         shell: pwsh
         run: choco install innosetup -y --no-progress
 
       - name: Build installer
+        if: steps.existing.outputs.skip != 'true'
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
@@ -65,24 +92,22 @@ jobs:
             installer/Rayvia.iss
 
       - name: Checksums
+        if: steps.existing.outputs.skip != 'true'
         shell: pwsh
         run: |
           $hash = (Get-FileHash artifacts/Rayvia-Setup-x64.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  Rayvia-Setup-x64.exe" | Set-Content artifacts/SHA256SUMS.txt
 
       - name: Create GitHub release
+        if: steps.existing.outputs.skip != 'true'
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $ghArgs = @(
-            "release", "create", "${{ steps.version.outputs.tag }}",
-            "artifacts/Rayvia-Setup-x64.exe",
-            "artifacts/SHA256SUMS.txt",
-            "--title", "Rayvia ${{ steps.version.outputs.version }}",
-            "--generate-notes"
-          )
-          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
-            $ghArgs += @("--target", "${{ github.sha }}")
-          }
-          gh @ghArgs
+          gh release create "${{ steps.version.outputs.tag }}" `
+            artifacts/Rayvia-Setup-x64.exe `
+            artifacts/SHA256SUMS.txt `
+            --repo "${{ github.repository }}" `
+            --target "${{ github.sha }}" `
+            --title "Rayvia ${{ steps.version.outputs.version }}" `
+            --generate-notes
