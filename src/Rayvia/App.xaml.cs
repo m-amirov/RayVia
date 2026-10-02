@@ -7,7 +7,9 @@ namespace Rayvia;
 
 public partial class App : Application
 {
+    private static readonly TimeSpan ElevationHandoffTimeout = TimeSpan.FromSeconds(30);
     private SingleInstanceService? _singleInstance;
+    private EventWaitHandle? _elevationHandoffSignal;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -16,9 +18,24 @@ public partial class App : Application
 
         try
         {
+            if (ElevationHandoff.TryParse(e.Args, out var handoff))
+            {
+                if (!SingleInstanceService.WaitForParentExitAsync(handoff!, ElevationHandoffTimeout).GetAwaiter().GetResult())
+                {
+                    Shutdown(1);
+                    return;
+                }
+            }
+
             _singleInstance = new SingleInstanceService();
             if (!_singleInstance.TryAcquire())
             {
+                if (handoff is not null)
+                {
+                    Shutdown(1);
+                    return;
+                }
+
                 _ = SingleInstanceService.SendCommandAsync(
                     new InstanceCommand("activate", e.Args),
                     TimeSpan.FromMilliseconds(500));
@@ -51,7 +68,12 @@ public partial class App : Application
                     window.Activate();
                 });
             };
-            Exit += (_, _) => _singleInstance?.Dispose();
+            Exit += (_, _) =>
+            {
+                _singleInstance?.Dispose();
+                _elevationHandoffSignal?.Dispose();
+                _elevationHandoffSignal = null;
+            };
 
             var autoConnect = e.Args.Any(x => string.Equals(x, "--autoconnect", StringComparison.OrdinalIgnoreCase));
             var window = new MainWindow(autoConnect);
@@ -101,5 +123,30 @@ public partial class App : Application
         {
             return "%LOCALAPPDATA%\\Rayvia\\Logs\\startup.log";
         }
+    }
+
+    public bool TryRestartElevatedAndShutdown(bool autoConnect)
+    {
+        if (_singleInstance is null)
+            return false;
+
+        var handoff = ElevationHandoff.Create(Environment.ProcessId);
+        _elevationHandoffSignal = SingleInstanceService.CreateHandoffSignal(handoff);
+        try
+        {
+            ElevationService.RestartElevated(autoConnect, handoff);
+        }
+        catch
+        {
+            _elevationHandoffSignal.Dispose();
+            _elevationHandoffSignal = null;
+            return false;
+        }
+
+        _singleInstance.Dispose();
+        _singleInstance = null;
+        _elevationHandoffSignal.Set();
+        Shutdown(0);
+        return true;
     }
 }

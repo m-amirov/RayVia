@@ -288,8 +288,8 @@ public partial class MainWindow : Window
             {
                 await SaveAsync();
                 _log.Write("Для TUN запрашиваются права администратора.");
-                ElevationService.RestartElevated(true);
-                Application.Current.Shutdown();
+                if (Application.Current is not App app || !app.TryRestartElevatedAndShutdown(autoConnect: true))
+                    throw new InvalidOperationException("Не удалось передать запуск повышенному Rayvia.");
             }
             catch (Exception ex)
             {
@@ -414,22 +414,34 @@ public partial class MainWindow : Window
 
     private void UpdateDashboardSummary()
     {
-        var active = _settings.Nodes.FirstOrDefault(x => x.Id == _settings.SelectedNodeId);
-        if (active is null)
+        if (_connectionCoordinator.State == ConnectionState.Connected && _connectionCoordinator.ActiveNode is ActiveNodeSnapshot connected)
         {
-            ActiveServerText.Text = "Сервер не выбран";
-            ActiveServerMetaText.Text = _settings.Subscriptions.Count == 0
-                ? "Добавьте профиль, чтобы начать"
-                : "Выберите сервер в разделе «Профили»";
+            ActiveServerText.Text = connected.Name;
+            var security = string.IsNullOrWhiteSpace(connected.Security) || connected.Security == "none"
+                ? ""
+                : $" · {connected.Security.ToUpperInvariant()}";
+            ActiveServerMetaText.Text =
+                $"{connected.Protocol.ToUpperInvariant()}{security} · {connected.Endpoint} · {connected.LatencyDisplay}";
         }
         else
         {
-            ActiveServerText.Text = active.Name;
-            var security = string.IsNullOrWhiteSpace(active.Security) || active.Security == "none"
-                ? ""
-                : $" · {active.Security.ToUpperInvariant()}";
-            ActiveServerMetaText.Text =
-                $"{active.Protocol.ToUpperInvariant()}{security} · {active.Endpoint} · {active.LatencyDisplay}";
+            var selected = _settings.Nodes.FirstOrDefault(x => x.Id == _settings.SelectedNodeId);
+            if (selected is null)
+            {
+                ActiveServerText.Text = "Сервер не выбран";
+                ActiveServerMetaText.Text = _settings.Subscriptions.Count == 0
+                    ? "Добавьте профиль, чтобы начать"
+                    : "Выберите сервер в разделе «Профили»";
+            }
+            else
+            {
+                ActiveServerText.Text = selected.Name;
+                var security = string.IsNullOrWhiteSpace(selected.Security) || selected.Security == "none"
+                    ? ""
+                    : $" · {selected.Security.ToUpperInvariant()}";
+                ActiveServerMetaText.Text =
+                    $"{selected.Protocol.ToUpperInvariant()}{security} · {selected.Endpoint} · {selected.LatencyDisplay}";
+            }
         }
 
         var group = string.IsNullOrWhiteSpace(_settings.SelectedGroupId)
@@ -557,35 +569,10 @@ public partial class MainWindow : Window
     {
         await _connectionCoordinator.RunExclusiveAsync(async () =>
         {
-            var oldNodes = _settings.Nodes
-                .Where(x => x.SourceSubscriptionId == subscription.Id)
-                .ToDictionary(CanonicalNodeIdentity.Build, StringComparer.Ordinal);
-
             var nodes = await _subscriptionService.RefreshAsync(subscription);
             if (nodes.Count == 0)
                 throw new InvalidOperationException("Поддерживаемые серверы в подписке не найдены.");
-
-            var idMigration = new Dictionary<string, string>(StringComparer.Ordinal);
-            foreach (var node in nodes)
-            {
-                if (oldNodes.TryGetValue(CanonicalNodeIdentity.Build(node), out var old))
-                {
-                    node.LatencyMs = old.LatencyMs;
-                    node.LatencyCheckedAt = old.LatencyCheckedAt;
-                    idMigration[old.Id] = node.Id;
-                }
-            }
-
-            foreach (var group in _settings.Groups)
-                for (var i = 0; i < group.NodeIds.Count; i++)
-                    if (idMigration.TryGetValue(group.NodeIds[i], out var migrated))
-                        group.NodeIds[i] = migrated;
-
-            if (_settings.SelectedNodeId is string selected && idMigration.TryGetValue(selected, out var selectedMigration))
-                _settings.SelectedNodeId = selectedMigration;
-
-            _settings.Nodes.RemoveAll(x => x.SourceSubscriptionId == subscription.Id);
-            _settings.Nodes.AddRange(nodes);
+            SubscriptionNodeReconciler.ApplyRefresh(_settings, subscription.Id, nodes);
             CleanGroupMembership();
 
             if (_settings.SelectedNodeId is null || _settings.Nodes.All(x => x.Id != _settings.SelectedNodeId))
@@ -598,16 +585,8 @@ public partial class MainWindow : Window
         if (sender is not Button { Tag: string id })
             return;
 
-        var removedIds = _settings.Nodes
-            .Where(x => x.SourceSubscriptionId == id)
-            .Select(x => x.Id)
-            .ToHashSet(StringComparer.Ordinal);
-
         _settings.Subscriptions.RemoveAll(x => x.Id == id);
-        _settings.Nodes.RemoveAll(x => x.SourceSubscriptionId == id);
-
-        foreach (var group in _settings.Groups)
-            group.NodeIds.RemoveAll(removedIds.Contains);
+        SubscriptionNodeReconciler.RemoveSubscription(_settings, id);
 
         if (_settings.Nodes.All(x => x.Id != _settings.SelectedNodeId))
             _settings.SelectedNodeId = _settings.Nodes.FirstOrDefault()?.Id;

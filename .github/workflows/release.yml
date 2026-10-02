@@ -1,7 +1,11 @@
 name: Release
 
 on:
-  push:
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
     branches:
       - main
   workflow_dispatch:
@@ -20,11 +24,14 @@ concurrency:
 
 jobs:
   release:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: windows-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Resolve version
         id: version
@@ -69,6 +76,26 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Restore
+        if: steps.existing.outputs.skip != 'true'
+        run: dotnet restore src/Rayvia/Rayvia.csproj
+
+      - name: Restore tests
+        if: steps.existing.outputs.skip != 'true'
+        run: dotnet restore tests/Rayvia.Tests/Rayvia.Tests.csproj
+
+      - name: Build
+        if: steps.existing.outputs.skip != 'true'
+        run: dotnet build src/Rayvia/Rayvia.csproj -c Release --no-restore
+
+      - name: Build tests
+        if: steps.existing.outputs.skip != 'true'
+        run: dotnet build tests/Rayvia.Tests/Rayvia.Tests.csproj -c Release --no-restore
+
+      - name: Test
+        if: steps.existing.outputs.skip != 'true'
+        run: dotnet test tests/Rayvia.Tests/Rayvia.Tests.csproj -c Release --no-build --no-restore
+
       - name: Publish
         if: steps.existing.outputs.skip != 'true'
         shell: pwsh
@@ -97,6 +124,13 @@ jobs:
             "/DPublishDir=$((Resolve-Path publish).Path)" `
             installer/Rayvia.iss
 
+      - name: Release gate
+        if: steps.existing.outputs.skip != 'true'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path publish\Rayvia.exe)) { throw "Publish output is missing." }
+          if (-not (Test-Path artifacts\Rayvia-Setup-x64.exe)) { throw "Installer output is missing." }
+
       - name: Checksums
         if: steps.existing.outputs.skip != 'true'
         shell: pwsh
@@ -110,10 +144,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          $target = if ($env:GITHUB_EVENT_NAME -eq "workflow_run") { "${{ github.event.workflow_run.head_sha }}" } else { "${{ github.sha }}" }
           gh release create "${{ steps.version.outputs.tag }}" `
             artifacts/Rayvia-Setup-x64.exe `
             artifacts/SHA256SUMS.txt `
             --repo "${{ github.repository }}" `
-            --target "${{ github.sha }}" `
+            --target $target `
             --title "Rayvia ${{ steps.version.outputs.version }}" `
             --generate-notes

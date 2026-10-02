@@ -95,7 +95,7 @@ public sealed class SubscriptionService
     public async Task<List<ProxyNode>> RefreshAsync(SubscriptionDefinition subscription)
     {
         var source = subscription.Url.Trim(); var payload = IsNodeLink(source) ? source : await _http.GetStringAsync(source); var normalized = NormalizePayload(payload); var nodes = new List<ProxyNode>();
-        foreach (var rawLine in normalized.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)) { var line = rawLine.Trim(); if (!IsNodeLink(line)) continue; var node = SubscriptionParser.Parse(line); node.Id = CanonicalNodeIdentity.CreateId(node); node.SourceSubscriptionId = subscription.Id; nodes.Add(node); }
+        foreach (var rawLine in normalized.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)) { var line = rawLine.Trim(); if (!IsNodeLink(line)) continue; var node = SubscriptionParser.Parse(line); node.Id = CanonicalNodeIdentity.CreateId(node); node.SourceSubscriptionId = subscription.Id; node.SourceSubscriptionIds = [subscription.Id]; nodes.Add(node); }
         subscription.LastUpdated = DateTimeOffset.Now; return nodes.GroupBy(x => x.Id, StringComparer.Ordinal).Select(x => x.First()).ToList();
     }
 

@@ -73,6 +73,7 @@ public sealed class ProxyNode
     public string? HostHeader { get; set; }
     public string? ServiceName { get; set; }
     public string? SourceSubscriptionId { get; set; }
+    public List<string> SourceSubscriptionIds { get; set; } = [];
     public int? LatencyMs { get; set; }
     public DateTimeOffset? LatencyCheckedAt { get; set; }
 
@@ -81,6 +82,25 @@ public sealed class ProxyNode
         : $"{Host}:{Port}";
     public string LatencyDisplay => LatencyMs is int value ? $"{value} ms" : "—";
     public string Display => $"{Name}  ·  {Protocol.ToUpperInvariant()}  ·  {Endpoint}  ·  {LatencyDisplay}";
+}
+
+public sealed record ActiveNodeSnapshot(
+    string Id,
+    string Name,
+    string Protocol,
+    string Host,
+    int Port,
+    string? Security,
+    int? LatencyMs)
+{
+    public string Endpoint => Host.Contains(":", StringComparison.Ordinal) && !Host.StartsWith("[", StringComparison.Ordinal)
+        ? $"[{Host}]:{Port}"
+        : $"{Host}:{Port}";
+
+    public string LatencyDisplay => LatencyMs is int value ? $"{value} ms" : "—";
+
+    public static ActiveNodeSnapshot From(ProxyNode node)
+        => new(node.Id, node.Name, node.Protocol, node.Host, node.Port, node.Security, node.LatencyMs);
 }
 
 public sealed class ServerGroup

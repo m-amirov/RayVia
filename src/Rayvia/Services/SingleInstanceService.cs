@@ -1,9 +1,52 @@
+using System.Diagnostics;
 using System.IO.Pipes;
 using System.Text.Json;
 
 namespace Rayvia.Services;
 
 public sealed record InstanceCommand(string Name, string[] Arguments);
+
+public sealed record ElevationHandoff(string Token, int ParentProcessId)
+{
+    private const string HandoffArgument = "--elevation-handoff=";
+    private const string ParentArgument = "--elevation-parent-pid=";
+
+    public static ElevationHandoff Create(int parentProcessId)
+    {
+        if (parentProcessId <= 0)
+            throw new ArgumentOutOfRangeException(nameof(parentProcessId));
+
+        return new ElevationHandoff(Guid.NewGuid().ToString("N"), parentProcessId);
+    }
+
+    public string[] ToArguments(bool autoConnect)
+    {
+        var arguments = new List<string>
+        {
+            HandoffArgument + Token,
+            ParentArgument + ParentProcessId.ToString(System.Globalization.CultureInfo.InvariantCulture)
+        };
+        if (autoConnect)
+            arguments.Insert(0, "--autoconnect");
+        return arguments.ToArray();
+    }
+
+    public static bool TryParse(IReadOnlyCollection<string> arguments, out ElevationHandoff? handoff)
+    {
+        handoff = null;
+        var token = arguments
+            .FirstOrDefault(x => x.StartsWith(HandoffArgument, StringComparison.OrdinalIgnoreCase))?
+            [HandoffArgument.Length..];
+        var parent = arguments
+            .FirstOrDefault(x => x.StartsWith(ParentArgument, StringComparison.OrdinalIgnoreCase))?
+            [ParentArgument.Length..];
+
+        return Guid.TryParseExact(token, "N", out _)
+               && int.TryParse(parent, out var parentProcessId)
+               && parentProcessId > 0
+               && (handoff = new ElevationHandoff(token!, parentProcessId)) is not null;
+    }
+}
 
 public sealed class InstanceCommandEventArgs(InstanceCommand command) : EventArgs
 {
@@ -14,6 +57,7 @@ public sealed class SingleInstanceService : IDisposable
 {
     public const string MutexName = "Local\\Rayvia.SingleInstance.v1";
     public const string PipeName = "Rayvia.SingleInstance.v1";
+    private const string HandoffEventPrefix = "Local\\Rayvia.ElevationHandoff.";
 
     private Mutex? _mutex;
     private CancellationTokenSource? _listenerCancellation;
@@ -50,6 +94,67 @@ public sealed class SingleInstanceService : IDisposable
         }
         catch { return false; }
     }
+
+    public static EventWaitHandle CreateHandoffSignal(ElevationHandoff handoff)
+        => new(false, EventResetMode.ManualReset, GetHandoffEventName(handoff.Token), out _);
+
+    public static async Task<bool> WaitForParentExitAsync(
+        ElevationHandoff handoff,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        if (timeout <= TimeSpan.Zero)
+            return false;
+
+        var deadline = DateTime.UtcNow + timeout;
+        var signaled = false;
+        while (DateTime.UtcNow < deadline && !cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                using var signal = EventWaitHandle.OpenExisting(GetHandoffEventName(handoff.Token));
+                var remaining = deadline - DateTime.UtcNow;
+                signaled = await Task.Run(() => signal.WaitOne(remaining), cancellationToken);
+                break;
+            }
+            catch (WaitHandleCannotBeOpenedException)
+            {
+                var remaining = deadline - DateTime.UtcNow;
+                if (remaining <= TimeSpan.Zero)
+                    break;
+                await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(100, remaining.TotalMilliseconds)), cancellationToken);
+            }
+        }
+
+        if (!signaled || cancellationToken.IsCancellationRequested)
+            return false;
+
+        while (DateTime.UtcNow < deadline && !cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                using var parent = Process.GetProcessById(handoff.ParentProcessId);
+                if (parent.HasExited)
+                    return true;
+
+                var remaining = deadline - DateTime.UtcNow;
+                await parent.WaitForExitAsync(cancellationToken).WaitAsync(remaining, cancellationToken);
+                return true;
+            }
+            catch (ArgumentException)
+            {
+                return true;
+            }
+            catch (TimeoutException)
+            {
+                return false;
+            }
+        }
+
+        return false;
+    }
+
+    private static string GetHandoffEventName(string token) => HandoffEventPrefix + token;
 
     private async Task ListenAsync(CancellationToken cancellationToken)
     {

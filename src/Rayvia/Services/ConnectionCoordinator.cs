@@ -11,6 +11,7 @@ public sealed class ConnectionCoordinator : IDisposable
     private readonly LogService _log;
     private readonly string _sessionId = Guid.NewGuid().ToString("N");
     private ConnectionState _state = ConnectionState.Disconnected;
+    private ActiveNodeSnapshot? _activeNode;
     private bool _disposed;
 
     public ConnectionCoordinator(IXrayCoreService xray, ISystemProxyService proxy, IRuntimeStateStore runtime, LogService log)
@@ -23,6 +24,8 @@ public sealed class ConnectionCoordinator : IDisposable
     }
 
     public ConnectionState State => _state;
+    public ActiveNodeSnapshot? ActiveNode => _activeNode;
+    public string? ActiveNodeId => _activeNode?.Id;
     public event EventHandler<ConnectionState>? StateChanged;
 
     public async Task<bool> ConnectAsync(ProxyNode node, AppSettings settings, CancellationToken cancellationToken = default)
@@ -47,11 +50,13 @@ public sealed class ConnectionCoordinator : IDisposable
                 {
                     _proxy.Disable();
                 }
+                _activeNode = ActiveNodeSnapshot.From(node);
                 SetState(ConnectionState.Connected);
                 return true;
             }
             catch
             {
+                _activeNode = null;
                 SetState(ConnectionState.Failed);
                 await CleanupUnsafeAsync();
                 _runtime.Delete();
@@ -73,6 +78,7 @@ public sealed class ConnectionCoordinator : IDisposable
                 _proxy.Disable();
                 await _xray.DisconnectAsync(cancellationToken);
                 _runtime.Delete();
+                _activeNode = null;
                 SetState(ConnectionState.Disconnected);
             }
             catch
@@ -98,6 +104,7 @@ public sealed class ConnectionCoordinator : IDisposable
         try
         {
             if (_state is ConnectionState.Stopping or ConnectionState.Disconnected) return;
+            _activeNode = null;
             SetState(ConnectionState.Failed);
             try { _proxy.Disable(); } catch (Exception ex) { _log.Write("Не удалось отключить System Proxy после падения Xray: " + ex.Message); }
             _runtime.Delete();

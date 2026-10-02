@@ -15,6 +15,27 @@ public sealed class ReliabilitySecurityTests
     }
 
     [Fact]
+    public void ElevationHandoffArgumentsRoundTripAndRejectInvalidInput()
+    {
+        var handoff = ElevationHandoff.Create(Environment.ProcessId);
+        var arguments = handoff.ToArguments(autoConnect: true);
+
+        Assert.True(ElevationHandoff.TryParse(arguments, out var parsed));
+        Assert.Equal(handoff, parsed);
+        Assert.Contains("--autoconnect", arguments);
+        Assert.False(ElevationHandoff.TryParse(["--elevation-handoff=not-a-guid", "--elevation-parent-pid=1"], out _));
+    }
+
+    [Fact]
+    public async Task ElevationHandoffDoesNotTakeOverBeforeParentExits()
+    {
+        var handoff = ElevationHandoff.Create(Environment.ProcessId);
+        using var signal = SingleInstanceService.CreateHandoffSignal(handoff);
+        signal.Set();
+        Assert.False(await SingleInstanceService.WaitForParentExitAsync(handoff, TimeSpan.FromMilliseconds(50)));
+    }
+
+    [Fact]
     public void RuntimeStateRoundTripsWithoutUserFiles()
     {
         using var temp = new TemporaryDirectory();

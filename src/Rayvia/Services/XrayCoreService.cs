@@ -15,6 +15,8 @@ public sealed class XrayExitedEventArgs(int processId, bool expected) : EventArg
     public bool Expected { get; } = expected;
 }
 
+public sealed record ActiveCore(string Version, string Path, Dictionary<string, string>? Hashes);
+
 public interface IXrayCoreService : IDisposable
 {
     event EventHandler<XrayExitedEventArgs>? Exited;
@@ -135,7 +137,8 @@ public sealed class XrayCoreService : IXrayCoreService
             try
             {
                 var record = JsonSerializer.Deserialize<ActiveCore>(await File.ReadAllTextAsync(activePath, cancellationToken));
-                if (record is not null && Directory.Exists(record.Path) && HasExpectedFiles(record.Path, requireWintun)) return Path.Combine(record.Path, "xray.exe");
+                if (await IsActiveCoreValidAsync(record, XrayRelease.Version, _coreDirectory, requireWintun, cancellationToken))
+                    return Path.Combine(record!.Path, "xray.exe");
             }
             catch { }
         }
@@ -159,37 +162,46 @@ public sealed class XrayCoreService : IXrayCoreService
             var wintun = FindOptionalFile(extracted, "wintun.dll"); var license = FindOptionalFile(extracted, "LICENSE-Wintun");
             if (requireWintun && wintun is null) throw new InvalidOperationException("Xray archive не содержит wintun.dll, необходимый для TUN.");
             var versionPath = Path.Combine(_coreDirectory, "versions", XrayRelease.Version); var next = versionPath + ".new-" + Guid.NewGuid().ToString("N"); Directory.CreateDirectory(next);
+            var old = versionPath + ".old-" + Guid.NewGuid().ToString("N");
+            var movedOld = false;
             try
             {
                 foreach (var file in files) File.Copy(file.Value, Path.Combine(next, file.Key));
                 if (wintun is not null) File.Copy(wintun, Path.Combine(next, "wintun.dll")); if (license is not null) File.Copy(license, Path.Combine(next, "LICENSE-Wintun"));
-                var old = versionPath + ".old-" + Guid.NewGuid().ToString("N");
+                if (Directory.Exists(versionPath)) { Directory.Move(versionPath, old); movedOld = true; }
+                Directory.Move(next, versionPath);
+
+                var hashes = await ComputeCriticalHashesAsync(versionPath, cancellationToken);
+                var metadata = new ActiveCore(XrayRelease.Version, versionPath, hashes);
+                var tempActive = activePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
                 try
                 {
-                    if (Directory.Exists(versionPath)) Directory.Move(versionPath, old);
-                    Directory.Move(next, versionPath);
-                    try { if (Directory.Exists(old)) Directory.Delete(old, true); } catch { }
+                    await using var marker = new FileStream(tempActive, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough | FileOptions.Asynchronous);
+                    await JsonSerializer.SerializeAsync(marker, metadata, cancellationToken: cancellationToken);
+                    await marker.FlushAsync(cancellationToken);
+                    marker.Flush(flushToDisk: true);
                 }
                 catch
                 {
-                    try { if (Directory.Exists(versionPath)) Directory.Delete(versionPath, true); } catch { }
-                    try { if (Directory.Exists(old)) Directory.Move(old, versionPath); } catch { }
+                    try { File.Delete(tempActive); } catch { }
                     throw;
                 }
+                try
+                {
+                    if (File.Exists(activePath)) File.Replace(tempActive, activePath, null, true); else File.Move(tempActive, activePath);
+                }
+                finally { try { File.Delete(tempActive); } catch { } }
+
+                if (movedOld)
+                    try { Directory.Delete(old, true); } catch { }
+            }
+            catch
+            {
+                try { if (Directory.Exists(versionPath)) Directory.Delete(versionPath, true); } catch { }
+                try { if (movedOld && Directory.Exists(old)) Directory.Move(old, versionPath); } catch { }
+                throw;
             }
             finally { try { if (Directory.Exists(next)) Directory.Delete(next, true); } catch { } }
-            var tempActive = activePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
-            await using (var marker = new FileStream(tempActive, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough | FileOptions.Asynchronous))
-            {
-                await JsonSerializer.SerializeAsync(marker, new ActiveCore(versionPath), cancellationToken: cancellationToken);
-                await marker.FlushAsync(cancellationToken);
-                marker.Flush(flushToDisk: true);
-            }
-            try
-            {
-                if (File.Exists(activePath)) File.Replace(tempActive, activePath, null, true); else File.Move(tempActive, activePath);
-            }
-            finally { try { File.Delete(tempActive); } catch { } }
             return Path.Combine(versionPath, "xray.exe");
         }
         finally { try { Directory.Delete(root, true); } catch { } }
@@ -207,14 +219,53 @@ public sealed class XrayCoreService : IXrayCoreService
     private async Task DownloadToPartAsync(JsonElement? asset, string path, CancellationToken cancellationToken) { if (asset is null) throw new InvalidOperationException("Missing release asset."); using var response = await _http.GetAsync(asset.Value.GetProperty("browser_download_url").GetString(), HttpCompletionOption.ResponseHeadersRead, cancellationToken); response.EnsureSuccessStatusCode(); await using var input = await response.Content.ReadAsStreamAsync(cancellationToken); await using var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024, FileOptions.WriteThrough | FileOptions.Asynchronous); await input.CopyToAsync(output, cancellationToken); await output.FlushAsync(cancellationToken); output.Flush(true); }
     private static string? ParseSha256(string content) { var match = Regex.Match(content, @"(?im)^SHA2-256\s*=\s*([0-9a-f]{64})\s*$"); return match.Success ? match.Groups[1].Value.ToLowerInvariant() : null; }
     public static async Task<bool> VerifySha256Async(string path, string expected, CancellationToken cancellationToken = default) { if (expected.Length != 64 || !expected.All(Uri.IsHexDigit)) return false; await using var stream = File.OpenRead(path); var hash = await SHA256.HashDataAsync(stream, cancellationToken); return Convert.ToHexString(hash).Equals(expected, StringComparison.OrdinalIgnoreCase); }
+    public static async Task<bool> IsActiveCoreValidAsync(ActiveCore? record, string expectedVersion, string coreDirectory, bool requireWintun, CancellationToken cancellationToken = default)
+    {
+        if (record is null || record.Hashes is null || !string.Equals(record.Version, expectedVersion, StringComparison.Ordinal) || !IsPathUnderDirectory(record.Path, coreDirectory))
+            return false;
+
+        var required = new[] { "xray.exe", "geoip.dat", "geosite.dat" };
+        if (requireWintun)
+            required = [.. required, "wintun.dll"];
+
+        foreach (var file in required)
+        {
+            var path = Path.Combine(record.Path, file);
+            if (!File.Exists(path) || !record.Hashes.TryGetValue(file, out var expectedHash) || !await VerifySha256Async(path, expectedHash, cancellationToken))
+                return false;
+        }
+
+        return true;
+    }
     private static string FindRequiredFile(string root, string name) => FindOptionalFile(root, name) ?? throw new InvalidOperationException($"Архив Xray не содержит {name}.");
     private static string? FindOptionalFile(string root, string name) => Directory.EnumerateFiles(root, name, SearchOption.AllDirectories).FirstOrDefault();
-    private static bool HasExpectedFiles(string root, bool requireWintun) => File.Exists(Path.Combine(root, "xray.exe")) && File.Exists(Path.Combine(root, "geoip.dat")) && File.Exists(Path.Combine(root, "geosite.dat")) && (!requireWintun || File.Exists(Path.Combine(root, "wintun.dll")));
+    private static bool IsPathUnderDirectory(string path, string directory)
+    {
+        try
+        {
+            var root = Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            var candidate = Path.GetFullPath(path);
+            return candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+    private static async Task<Dictionary<string, string>> ComputeCriticalHashesAsync(string root, CancellationToken cancellationToken)
+    {
+        var hashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in new[] { "xray.exe", "geoip.dat", "geosite.dat", "wintun.dll" })
+        {
+            var path = Path.Combine(root, name);
+            if (!File.Exists(path))
+                continue;
+            await using var stream = File.OpenRead(path);
+            hashes[name] = Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken)).ToLowerInvariant();
+        }
+        return hashes;
+    }
     private static bool IsGeositeLoadError(string detail) => detail.Contains("geosite", StringComparison.OrdinalIgnoreCase) && detail.Contains("failed", StringComparison.OrdinalIgnoreCase);
     private static bool IsGeoIpLoadError(string detail) => detail.Contains("geoip", StringComparison.OrdinalIgnoreCase) && detail.Contains("failed", StringComparison.OrdinalIgnoreCase);
     private static async Task<ConfigValidationResult> ValidateConfigAsync(string executable, string configPath, CancellationToken cancellationToken) { using var process = new Process { StartInfo = new ProcessStartInfo { FileName = executable, Arguments = $"run -test -c \"{configPath}\"", WorkingDirectory = Path.GetDirectoryName(executable)!, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true } }; if (!process.Start()) return new(false, "Не удалось запустить xray -test."); var stdout = process.StandardOutput.ReadToEndAsync(cancellationToken); var stderr = process.StandardError.ReadToEndAsync(cancellationToken); try { await process.WaitForExitAsync(new CancellationTokenSource(TimeSpan.FromSeconds(12)).Token); } catch { try { process.Kill(true); } catch { } return new(false, "Проверка конфигурации Xray превысила timeout."); } var detail = string.Join(" ", new[] { await stderr, await stdout }.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim())); return new(process.ExitCode == 0, detail); }
     private sealed record ConfigValidationResult(bool Success, string Detail);
-    private sealed record ActiveCore(string Path);
     private static void TryDelete(string path) { try { File.Delete(path); } catch { } }
     public void Dispose() { DisconnectAsync().GetAwaiter().GetResult(); _http.Dispose(); }
 }
