@@ -3,58 +3,104 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Rayvia"
         Icon="Assets/rayvia.ico"
-        Width="1240"
-        Height="800"
-        MinWidth="1040"
-        MinHeight="680"
-        WindowStartupLocation="CenterScreen">
+        Width="1000"
+        Height="680"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource WindowBgBrush}">
     <Grid>
         <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="220"/>
+            <ColumnDefinition Width="176"/>
             <ColumnDefinition Width="*"/>
         </Grid.ColumnDefinitions>
 
+        <!-- SIDEBAR -->
         <Border Grid.Column="0"
-                Background="#101318"
-                BorderBrush="{StaticResource BorderBrush}"
-                BorderThickness="0,0,1,0">
-            <Grid Margin="16">
+                Background="{StaticResource SidebarBrush}">
+            <Grid Margin="14,16,14,14">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="28"/>
+                    <RowDefinition Height="22"/>
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <Image Source="Assets/rayvia.ico" Width="38" Height="38"/>
-                    <StackPanel Margin="10,0,0,0" VerticalAlignment="Center">
-                        <TextBlock Text="Rayvia" FontSize="18" FontWeight="SemiBold"/>
+                <StackPanel Orientation="Horizontal">
+                    <Border Width="34"
+                            Height="34"
+                            CornerRadius="9"
+                            Background="#162236">
+                        <Image Source="Assets/rayvia.ico"
+                               Width="28"
+                               Height="28"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"/>
+                    </Border>
+                    <StackPanel Margin="10,0,0,0"
+                                VerticalAlignment="Center">
+                        <TextBlock Text="Rayvia"
+                                   Foreground="{StaticResource SidebarTextBrush}"
+                                   FontSize="16"
+                                   FontWeight="SemiBold"/>
                         <TextBlock Text="Proxy client"
-                                   Foreground="{StaticResource MutedBrush}"
-                                   FontSize="11"/>
+                                   Foreground="{StaticResource SidebarMutedBrush}"
+                                   FontSize="10"
+                                   Margin="0,1,0,0"/>
                     </StackPanel>
                 </StackPanel>
 
                 <StackPanel Grid.Row="2">
-                    <Button Style="{StaticResource NavButton}" Content="Главная" Click="Home_Click"/>
-                    <Button Style="{StaticResource NavButton}" Content="Подписки" Click="Subscriptions_Click"/>
-                    <Button Style="{StaticResource NavButton}" Content="Серверы" Click="Servers_Click"/>
-                    <Button Style="{StaticResource NavButton}" Content="Маршрутизация" Click="Routing_Click"/>
-                    <Button Style="{StaticResource NavButton}" Content="Соединения" Click="Connections_Click"/>
-                    <Button Style="{StaticResource NavButton}" Content="Журнал" Click="Logs_Click"/>
-                    <Button Style="{StaticResource NavButton}" Content="Настройки" Click="Settings_Click"/>
+                    <Button x:Name="NavHomeButton"
+                            Style="{StaticResource NavButton}"
+                            Content="Главная"
+                            Click="Home_Click"/>
+                    <Button x:Name="NavSubscriptionsButton"
+                            Style="{StaticResource NavButton}"
+                            Content="Подписки"
+                            Click="Subscriptions_Click"/>
+                    <Button x:Name="NavServersButton"
+                            Style="{StaticResource NavButton}"
+                            Content="Серверы"
+                            Click="Servers_Click"/>
+                    <Button x:Name="NavRoutingButton"
+                            Style="{StaticResource NavButton}"
+                            Content="Маршрутизация"
+                            Click="Routing_Click"/>
+                    <Button x:Name="NavConnectionsButton"
+                            Style="{StaticResource NavButton}"
+                            Content="Соединения"
+                            Click="Connections_Click"/>
+                    <Button x:Name="NavLogsButton"
+                            Style="{StaticResource NavButton}"
+                            Content="Журнал"
+                            Click="Logs_Click"/>
+                    <Button x:Name="NavSettingsButton"
+                            Style="{StaticResource NavButton}"
+                            Content="Настройки"
+                            Click="Settings_Click"/>
                 </StackPanel>
 
-                <TextBlock x:Name="VersionText"
-                           Grid.Row="3"
-                           Foreground="{StaticResource MutedBrush}"
-                           FontSize="11"
-                           Margin="12,0,0,4"/>
+                <Border Grid.Row="3"
+                        Background="#161F2E"
+                        CornerRadius="8"
+                        Padding="10,8">
+                    <StackPanel>
+                        <TextBlock Text="Rayvia"
+                                   Foreground="{StaticResource SidebarTextBrush}"
+                                   FontSize="11"
+                                   FontWeight="SemiBold"/>
+                        <TextBlock x:Name="VersionText"
+                                   Foreground="{StaticResource SidebarMutedBrush}"
+                                   FontSize="10"
+                                   Margin="0,2,0,0"/>
+                    </StackPanel>
+                </Border>
             </Grid>
         </Border>
 
-        <Grid Grid.Column="1" Margin="32,24,32,28">
+        <!-- CONTENT -->
+        <Grid Grid.Column="1"
+              Margin="26,20,26,22">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
@@ -63,128 +109,137 @@
 
             <Border x:Name="UpdateBanner"
                     Visibility="Collapsed"
-                    Background="#15233A"
-                    BorderBrush="#274A7D"
+                    Background="#EFF6FF"
+                    BorderBrush="#BFDBFE"
                     BorderThickness="1"
                     CornerRadius="9"
-                    Padding="14,10"
-                    Margin="0,0,0,18">
-                <DockPanel>
+                    Padding="12,9"
+                    Margin="0,0,0,14">
+                <DockPanel LastChildFill="True">
                     <Button DockPanel.Dock="Right"
                             Style="{StaticResource PrimaryButton}"
-                            Padding="14,7"
+                            Padding="12,6"
+                            MinHeight="32"
                             Content="Установить"
                             Click="InstallUpdate_Click"/>
                     <StackPanel VerticalAlignment="Center">
                         <TextBlock x:Name="UpdateTitle"
+                                   Text="Доступно обновление"
                                    FontWeight="SemiBold"
-                                   Text="Доступно обновление"/>
+                                   FontSize="13"/>
                         <TextBlock Text="Установщик скачан и проверен."
-                                   Foreground="{StaticResource MutedBrush}"
-                                   FontSize="12"
+                                   Style="{StaticResource CaptionStyle}"
                                    Margin="0,2,0,0"/>
                     </StackPanel>
                 </DockPanel>
             </Border>
 
-            <StackPanel Grid.Row="1" Margin="0,0,0,22">
-                <TextBlock x:Name="PageTitle"
-                           Text="Главная"
-                           FontSize="28"
-                           FontWeight="SemiBold"/>
-                <TextBlock x:Name="PageSubtitle"
-                           Text="Подключение и состояние"
-                           Foreground="{StaticResource MutedBrush}"
-                           Margin="0,5,0,0"/>
-            </StackPanel>
+            <Grid Grid.Row="1"
+                  Margin="0,0,0,18">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <StackPanel>
+                    <TextBlock x:Name="PageTitle"
+                               Text="Главная"
+                               Style="{StaticResource PageTitleStyle}"/>
+                    <TextBlock x:Name="PageSubtitle"
+                               Text="Подключение и состояние"
+                               Style="{StaticResource CaptionStyle}"
+                               Margin="0,4,0,0"/>
+                </StackPanel>
+            </Grid>
 
             <Grid Grid.Row="2">
 
                 <!-- HOME -->
-                <ScrollViewer x:Name="HomePage" VerticalScrollBarVisibility="Auto">
-                    <Grid>
+                <ScrollViewer x:Name="HomePage"
+                              VerticalScrollBarVisibility="Auto">
+                    <Grid MaxWidth="760"
+                          HorizontalAlignment="Left">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="1.4*"/>
-                            <ColumnDefinition Width="24"/>
-                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="470"/>
+                            <ColumnDefinition Width="18"/>
+                            <ColumnDefinition Width="272"/>
                         </Grid.ColumnDefinitions>
 
                         <Border Grid.Column="0"
-                                Background="{StaticResource PanelBrush}"
+                                Background="{StaticResource SurfaceBrush}"
                                 BorderBrush="{StaticResource BorderBrush}"
                                 BorderThickness="1"
                                 CornerRadius="12"
-                                Padding="24">
+                                Padding="18">
                             <StackPanel>
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,24">
+                                <Grid Margin="0,0,0,18">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
                                     <Ellipse x:Name="StatusDot"
                                              Width="9"
                                              Height="9"
                                              Fill="{StaticResource MutedBrush}"
-                                             Margin="0,4,9,0"/>
-                                    <StackPanel>
+                                             VerticalAlignment="Top"
+                                             Margin="0,5,9,0"/>
+                                    <StackPanel Grid.Column="1">
                                         <TextBlock x:Name="StatusText"
                                                    Text="Не подключено"
+                                                   FontSize="15"
                                                    FontWeight="SemiBold"/>
                                         <TextBlock x:Name="ActiveServerText"
                                                    Text="Сервер не выбран"
-                                                   Foreground="{StaticResource MutedBrush}"
-                                                   FontSize="12"
+                                                   Style="{StaticResource CaptionStyle}"
                                                    Margin="0,3,0,0"/>
                                     </StackPanel>
-                                </StackPanel>
+                                </Grid>
 
                                 <TextBlock Text="Режим подключения"
-                                           Foreground="{StaticResource MutedBrush}"
-                                           FontSize="12"
-                                           Margin="0,0,0,7"/>
+                                           Style="{StaticResource CaptionStyle}"
+                                           Margin="0,0,0,6"/>
                                 <ComboBox x:Name="ConnectionModeCombo"
-                                          Height="42"
+                                          Height="38"
                                           SelectionChanged="ConnectionModeCombo_SelectionChanged"
-                                          Margin="0,0,0,16">
+                                          Margin="0,0,0,12">
                                     <ComboBoxItem Content="System Proxy" Tag="SystemProxy"/>
                                     <ComboBoxItem Content="TUN — весь трафик Windows" Tag="Tun"/>
                                 </ComboBox>
 
                                 <TextBlock Text="Группа"
-                                           Foreground="{StaticResource MutedBrush}"
-                                           FontSize="12"
-                                           Margin="0,0,0,7"/>
+                                           Style="{StaticResource CaptionStyle}"
+                                           Margin="0,0,0,6"/>
                                 <ComboBox x:Name="HomeGroupCombo"
-                                          Height="42"
+                                          Height="38"
                                           DisplayMemberPath="Display"
                                           SelectionChanged="HomeGroupCombo_SelectionChanged"
-                                          Margin="0,0,0,16"/>
+                                          Margin="0,0,0,12"/>
 
                                 <TextBlock Text="Сервер"
-                                           Foreground="{StaticResource MutedBrush}"
-                                           FontSize="12"
-                                           Margin="0,0,0,7"/>
+                                           Style="{StaticResource CaptionStyle}"
+                                           Margin="0,0,0,6"/>
                                 <ComboBox x:Name="ServerCombo"
-                                          Height="42"
+                                          Height="38"
                                           DisplayMemberPath="Display"
                                           SelectionChanged="ServerCombo_SelectionChanged"
-                                          Margin="0,0,0,14"/>
+                                          Margin="0,0,0,12"/>
 
                                 <CheckBox x:Name="AutoSelectCheck"
                                           Content="Выбирать сервер с минимальной задержкой"
                                           Checked="AutoSelectCheck_Changed"
                                           Unchecked="AutoSelectCheck_Changed"
-                                          Margin="0,0,0,22"/>
+                                          Margin="0,0,0,17"/>
 
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="12"/>
+                                        <ColumnDefinition Width="10"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
-
                                     <Button x:Name="ConnectButton"
-                                            Height="46"
+                                            Height="40"
                                             Style="{StaticResource PrimaryButton}"
                                             Content="Подключить"
                                             Click="Connect_Click"/>
-
                                     <Button Grid.Column="2"
                                             x:Name="PingHomeButton"
                                             Style="{StaticResource SecondaryButton}"
@@ -195,58 +250,60 @@
                         </Border>
 
                         <StackPanel Grid.Column="2">
-                            <Border Background="{StaticResource PanelBrush}"
+                            <Border Background="{StaticResource SurfaceBrush}"
                                     BorderBrush="{StaticResource BorderBrush}"
                                     BorderThickness="1"
                                     CornerRadius="12"
-                                    Padding="20"
-                                    Margin="0,0,0,16">
+                                    Padding="16"
+                                    Margin="0,0,0,12">
                                 <StackPanel>
                                     <TextBlock Text="Состояние"
-                                               FontWeight="SemiBold"
-                                               FontSize="15"
-                                               Margin="0,0,0,15"/>
-                                    <Grid Margin="0,0,0,10">
-                                        <TextBlock Text="Xray core" Foreground="{StaticResource MutedBrush}"/>
+                                               Style="{StaticResource SectionTitleStyle}"
+                                               Margin="0,0,0,13"/>
+                                    <Grid Margin="0,0,0,8">
+                                        <TextBlock Text="Xray core" Style="{StaticResource CaptionStyle}"/>
                                         <TextBlock x:Name="HomeCoreText"
                                                    Text="Не запущен"
-                                                   HorizontalAlignment="Right"/>
+                                                   HorizontalAlignment="Right"
+                                                   FontSize="12"/>
                                     </Grid>
-                                    <Grid Margin="0,0,0,10">
-                                        <TextBlock Text="Режим" Foreground="{StaticResource MutedBrush}"/>
+                                    <Grid Margin="0,0,0,8">
+                                        <TextBlock Text="Режим" Style="{StaticResource CaptionStyle}"/>
                                         <TextBlock x:Name="HomeModeText"
                                                    Text="System Proxy"
-                                                   HorizontalAlignment="Right"/>
+                                                   HorizontalAlignment="Right"
+                                                   FontSize="12"/>
                                     </Grid>
-                                    <Grid Margin="0,0,0,10">
-                                        <TextBlock Text="System Proxy" Foreground="{StaticResource MutedBrush}"/>
+                                    <Grid Margin="0,0,0,8">
+                                        <TextBlock Text="System Proxy" Style="{StaticResource CaptionStyle}"/>
                                         <TextBlock x:Name="HomeProxyText"
                                                    Text="Выключен"
-                                                   HorizontalAlignment="Right"/>
+                                                   HorizontalAlignment="Right"
+                                                   FontSize="12"/>
                                     </Grid>
                                     <Grid>
-                                        <TextBlock Text="Локальный HTTP" Foreground="{StaticResource MutedBrush}"/>
+                                        <TextBlock Text="HTTP" Style="{StaticResource CaptionStyle}"/>
                                         <TextBlock x:Name="HomePortText"
                                                    Text="127.0.0.1:10809"
-                                                   HorizontalAlignment="Right"/>
+                                                   HorizontalAlignment="Right"
+                                                   FontSize="12"/>
                                     </Grid>
                                 </StackPanel>
                             </Border>
 
-                            <Border Background="{StaticResource PanelBrush}"
+                            <Border Background="#F8FAFC"
                                     BorderBrush="{StaticResource BorderBrush}"
                                     BorderThickness="1"
                                     CornerRadius="12"
-                                    Padding="20">
+                                    Padding="16">
                                 <StackPanel>
                                     <TextBlock Text="TUN"
-                                               FontWeight="SemiBold"
-                                               FontSize="15"/>
-                                    <TextBlock Text="TUN перехватывает системный трафик через Wintun. При первом запуске Windows запросит права администратора."
+                                               Style="{StaticResource SectionTitleStyle}"/>
+                                    <TextBlock Text="Перехватывает системный трафик через Wintun. Windows запросит права администратора."
                                                TextWrapping="Wrap"
-                                               Foreground="{StaticResource MutedBrush}"
-                                               LineHeight="19"
-                                               Margin="0,9,0,0"/>
+                                               Style="{StaticResource CaptionStyle}"
+                                               LineHeight="18"
+                                               Margin="0,7,0,0"/>
                                 </StackPanel>
                             </Border>
                         </StackPanel>
@@ -254,72 +311,84 @@
                 </ScrollViewer>
 
                 <!-- SUBSCRIPTIONS -->
-                <Grid x:Name="SubscriptionsPage" Visibility="Collapsed">
+                <Grid x:Name="SubscriptionsPage"
+                      Visibility="Collapsed">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="18"/>
+                        <RowDefinition Height="14"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <Border Background="{StaticResource PanelBrush}"
+                    <Border Width="690"
+                            HorizontalAlignment="Left"
+                            Background="{StaticResource SurfaceBrush}"
                             BorderBrush="{StaticResource BorderBrush}"
                             BorderThickness="1"
                             CornerRadius="12"
-                            Padding="18">
+                            Padding="16">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="12"/>
+                                <ColumnDefinition Width="10"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
                             <TextBox x:Name="SubscriptionUrlText"
-                                     Height="40"
+                                     Height="38"
                                      VerticalContentAlignment="Center"
                                      ToolTip="URL подписки или ссылка сервера"
                                      KeyDown="SubscriptionUrlText_KeyDown"/>
                             <Button Grid.Column="2"
                                     Style="{StaticResource PrimaryButton}"
+                                    MinWidth="104"
                                     Content="Добавить"
                                     Click="AddSubscription_Click"/>
                         </Grid>
                     </Border>
 
-                    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
-                        <ItemsControl x:Name="SubscriptionsList">
+                    <ScrollViewer Grid.Row="2"
+                                  VerticalScrollBarVisibility="Auto">
+                        <ItemsControl x:Name="SubscriptionsList"
+                                      Width="690"
+                                      HorizontalAlignment="Left">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <Border Background="{StaticResource PanelBrush}"
+                                    <Border Background="{StaticResource SurfaceBrush}"
                                             BorderBrush="{StaticResource BorderBrush}"
                                             BorderThickness="1"
                                             CornerRadius="10"
-                                            Padding="16"
-                                            Margin="0,0,0,10">
+                                            Padding="14"
+                                            Margin="0,0,0,8">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*"/>
                                                 <ColumnDefinition Width="Auto"/>
                                             </Grid.ColumnDefinitions>
                                             <StackPanel>
-                                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
+                                                <TextBlock Text="{Binding Name}"
+                                                           FontSize="13"
+                                                           FontWeight="SemiBold"/>
                                                 <TextBlock Text="{Binding Url}"
-                                                           Foreground="{StaticResource MutedBrush}"
-                                                           FontSize="12"
+                                                           Style="{StaticResource CaptionStyle}"
                                                            TextTrimming="CharacterEllipsis"
-                                                           Margin="0,5,20,0"/>
+                                                           Margin="0,4,16,0"/>
                                                 <TextBlock Text="{Binding UpdatedDisplay}"
-                                                           Foreground="{StaticResource MutedBrush}"
-                                                           FontSize="11"
-                                                           Margin="0,4,20,0"/>
+                                                           Foreground="#98A2B3"
+                                                           FontSize="10"
+                                                           Margin="0,3,16,0"/>
                                             </StackPanel>
-                                            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                            <StackPanel Grid.Column="1"
+                                                        Orientation="Horizontal"
+                                                        VerticalAlignment="Center">
                                                 <Button Style="{StaticResource SecondaryButton}"
-                                                        Padding="12,7"
+                                                        Padding="10,5"
+                                                        MinHeight="30"
                                                         Content="Обновить"
                                                         Tag="{Binding Id}"
                                                         Click="RefreshSubscription_Click"
-                                                        Margin="0,0,8,0"/>
+                                                        Margin="0,0,6,0"/>
                                                 <Button Style="{StaticResource SecondaryButton}"
-                                                        Padding="12,7"
+                                                        Padding="10,5"
+                                                        MinHeight="30"
                                                         Content="Удалить"
                                                         Tag="{Binding Id}"
                                                         Click="DeleteSubscription_Click"/>
@@ -333,26 +402,27 @@
                 </Grid>
 
                 <!-- SERVERS -->
-                <Grid x:Name="ServersPage" Visibility="Collapsed">
+                <Grid x:Name="ServersPage"
+                      Visibility="Collapsed">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="16"/>
+                        <RowDefinition Height="10"/>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="16"/>
+                        <RowDefinition Height="12"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
-                    <Border Background="{StaticResource PanelBrush}"
+                    <Border Background="{StaticResource SurfaceBrush}"
                             BorderBrush="{StaticResource BorderBrush}"
                             BorderThickness="1"
                             CornerRadius="12"
-                            Padding="18">
+                            Padding="12">
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="16"/>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="10"/>
+                                <ColumnDefinition Width="12"/>
+                                <ColumnDefinition Width="190"/>
+                                <ColumnDefinition Width="8"/>
                                 <ColumnDefinition Width="Auto"/>
                                 <ColumnDefinition Width="*"/>
                                 <ColumnDefinition Width="Auto"/>
@@ -365,7 +435,7 @@
 
                             <TextBox x:Name="NewGroupText"
                                      Grid.Column="2"
-                                     Height="38"
+                                     Height="36"
                                      VerticalContentAlignment="Center"
                                      ToolTip="Название группы"/>
 
@@ -384,35 +454,35 @@
                     </Border>
 
                     <Border Grid.Row="2"
-                            Background="{StaticResource PanelBrush}"
+                            Background="{StaticResource SurfaceBrush}"
                             BorderBrush="{StaticResource BorderBrush}"
                             BorderThickness="1"
                             CornerRadius="12"
-                            Padding="18">
+                            Padding="12">
                         <Grid>
                             <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="220"/>
-                                <ColumnDefinition Width="12"/>
+                                <ColumnDefinition Width="190"/>
+                                <ColumnDefinition Width="8"/>
                                 <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="12"/>
+                                <ColumnDefinition Width="8"/>
                                 <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="10"/>
+                                <ColumnDefinition Width="8"/>
                                 <ColumnDefinition Width="Auto"/>
                             </Grid.ColumnDefinitions>
 
                             <ComboBox x:Name="ServerGroupCombo"
-                                      Height="40"
+                                      Height="36"
                                       DisplayMemberPath="Display"
                                       SelectionChanged="ServerGroupCombo_SelectionChanged"/>
 
                             <ComboBox x:Name="GroupMemberServerCombo"
                                       Grid.Column="2"
-                                      Height="40"
+                                      Height="36"
                                       DisplayMemberPath="Display"/>
 
                             <Button Grid.Column="4"
                                     Style="{StaticResource SecondaryButton}"
-                                    Content="Добавить в группу"
+                                    Content="Добавить"
                                     Click="AddServerToGroup_Click"/>
 
                             <Button Grid.Column="6"
@@ -424,8 +494,8 @@
 
                     <Grid Grid.Row="4">
                         <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="1.45*"/>
-                            <ColumnDefinition Width="18"/>
+                            <ColumnDefinition Width="1.35*"/>
+                            <ColumnDefinition Width="12"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
 
@@ -433,32 +503,36 @@
                             <ItemsControl x:Name="ServersList">
                                 <ItemsControl.ItemTemplate>
                                     <DataTemplate>
-                                        <Border Background="{StaticResource PanelBrush}"
+                                        <Border Background="{StaticResource SurfaceBrush}"
                                                 BorderBrush="{StaticResource BorderBrush}"
                                                 BorderThickness="1"
                                                 CornerRadius="9"
-                                                Padding="14"
-                                                Margin="0,0,0,8">
+                                                Padding="11"
+                                                Margin="0,0,0,7">
                                             <Grid>
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="*"/>
-                                                    <ColumnDefinition Width="90"/>
+                                                    <ColumnDefinition Width="68"/>
                                                     <ColumnDefinition Width="Auto"/>
                                                 </Grid.ColumnDefinitions>
                                                 <StackPanel>
-                                                    <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
-                                                    <TextBlock Text="{Binding Endpoint}"
-                                                               Foreground="{StaticResource MutedBrush}"
+                                                    <TextBlock Text="{Binding Name}"
                                                                FontSize="12"
-                                                               Margin="0,4,0,0"/>
+                                                               FontWeight="SemiBold"/>
+                                                    <TextBlock Text="{Binding Endpoint}"
+                                                               Style="{StaticResource CaptionStyle}"
+                                                               FontSize="10"
+                                                               Margin="0,3,0,0"/>
                                                 </StackPanel>
                                                 <TextBlock Grid.Column="1"
                                                            Text="{Binding LatencyDisplay}"
                                                            VerticalAlignment="Center"
-                                                           Foreground="{StaticResource MutedBrush}"/>
+                                                           Foreground="{StaticResource MutedBrush}"
+                                                           FontSize="11"/>
                                                 <Button Grid.Column="2"
                                                         Style="{StaticResource SecondaryButton}"
-                                                        Padding="10,6"
+                                                        Padding="9,4"
+                                                        MinHeight="28"
                                                         Content="Выбрать"
                                                         Tag="{Binding Id}"
                                                         Click="SelectServer_Click"/>
@@ -470,39 +544,42 @@
                         </ScrollViewer>
 
                         <Border Grid.Column="2"
-                                Background="{StaticResource PanelBrush}"
+                                Background="{StaticResource SurfaceBrush}"
                                 BorderBrush="{StaticResource BorderBrush}"
                                 BorderThickness="1"
-                                CornerRadius="12"
-                                Padding="16">
+                                CornerRadius="10"
+                                Padding="13">
                             <Grid>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="Auto"/>
-                                    <RowDefinition Height="12"/>
+                                    <RowDefinition Height="10"/>
                                     <RowDefinition Height="*"/>
                                 </Grid.RowDefinitions>
                                 <TextBlock x:Name="GroupMembersTitle"
                                            Text="Состав группы"
-                                           FontWeight="SemiBold"/>
-                                <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                                           Style="{StaticResource SectionTitleStyle}"/>
+                                <ScrollViewer Grid.Row="2"
+                                              VerticalScrollBarVisibility="Auto">
                                     <ItemsControl x:Name="GroupMembersList">
                                         <ItemsControl.ItemTemplate>
                                             <DataTemplate>
-                                                <Grid Margin="0,0,0,10">
+                                                <Grid Margin="0,0,0,8">
                                                     <Grid.ColumnDefinitions>
                                                         <ColumnDefinition Width="*"/>
                                                         <ColumnDefinition Width="Auto"/>
                                                     </Grid.ColumnDefinitions>
                                                     <StackPanel>
-                                                        <TextBlock Text="{Binding Name}"/>
+                                                        <TextBlock Text="{Binding Name}"
+                                                                   FontSize="12"/>
                                                         <TextBlock Text="{Binding Endpoint}"
-                                                                   Foreground="{StaticResource MutedBrush}"
-                                                                   FontSize="11"
+                                                                   Style="{StaticResource CaptionStyle}"
+                                                                   FontSize="10"
                                                                    Margin="0,2,0,0"/>
                                                     </StackPanel>
                                                     <Button Grid.Column="1"
                                                             Style="{StaticResource SecondaryButton}"
-                                                            Padding="8,4"
+                                                            Padding="8,3"
+                                                            MinHeight="26"
                                                             Content="Убрать"
                                                             Tag="{Binding Id}"
                                                             Click="RemoveServerFromGroup_Click"/>
@@ -520,27 +597,30 @@
                 <ScrollViewer x:Name="RoutingPage"
                               Visibility="Collapsed"
                               VerticalScrollBarVisibility="Auto">
-                    <StackPanel>
-                        <Border Background="{StaticResource PanelBrush}"
+                    <StackPanel Width="720"
+                                HorizontalAlignment="Left">
+                        <Border Background="{StaticResource SurfaceBrush}"
                                 BorderBrush="{StaticResource BorderBrush}"
                                 BorderThickness="1"
                                 CornerRadius="12"
-                                Padding="20"
-                                Margin="0,0,0,16">
+                                Padding="16"
+                                Margin="0,0,0,10">
                             <StackPanel>
-                                <TextBlock Text="Режим" FontWeight="SemiBold" Margin="0,0,0,14"/>
+                                <TextBlock Text="Режим"
+                                           Style="{StaticResource SectionTitleStyle}"
+                                           Margin="0,0,0,11"/>
                                 <RadioButton x:Name="SmartRadio"
                                              Content="Россия и локальные сети напрямую, остальное через прокси"
                                              GroupName="RoutingMode"
                                              Tag="Smart"
                                              Checked="RoutingMode_Checked"
-                                             Margin="0,0,0,10"/>
+                                             Margin="0,0,0,8"/>
                                 <RadioButton x:Name="ProxyAllRadio"
                                              Content="Всё через прокси"
                                              GroupName="RoutingMode"
                                              Tag="ProxyAll"
                                              Checked="RoutingMode_Checked"
-                                             Margin="0,0,0,10"/>
+                                             Margin="0,0,0,8"/>
                                 <RadioButton x:Name="DirectAllRadio"
                                              Content="Всё напрямую"
                                              GroupName="RoutingMode"
@@ -549,27 +629,27 @@
                             </StackPanel>
                         </Border>
 
-                        <Border Background="{StaticResource PanelBrush}"
+                        <Border Background="{StaticResource SurfaceBrush}"
                                 BorderBrush="{StaticResource BorderBrush}"
                                 BorderThickness="1"
                                 CornerRadius="12"
-                                Padding="18"
-                                Margin="0,0,0,16">
+                                Padding="12"
+                                Margin="0,0,0,10">
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="12"/>
-                                    <ColumnDefinition Width="150"/>
-                                    <ColumnDefinition Width="12"/>
+                                    <ColumnDefinition Width="8"/>
+                                    <ColumnDefinition Width="132"/>
+                                    <ColumnDefinition Width="8"/>
                                     <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
                                 <TextBox x:Name="RulePatternText"
-                                         Height="40"
+                                         Height="36"
                                          VerticalContentAlignment="Center"
                                          ToolTip="example.com, 1.2.3.4/24, geosite:..."/>
                                 <ComboBox x:Name="RuleActionCombo"
                                           Grid.Column="2"
-                                          Height="40"
+                                          Height="36"
                                           SelectedIndex="0">
                                     <ComboBoxItem Content="Через прокси" Tag="proxy"/>
                                     <ComboBoxItem Content="Напрямую" Tag="direct"/>
@@ -577,34 +657,32 @@
                                 </ComboBox>
                                 <Button Grid.Column="4"
                                         Style="{StaticResource PrimaryButton}"
-                                        Content="Добавить правило"
+                                        Content="Добавить"
                                         Click="AddRule_Click"/>
                             </Grid>
                         </Border>
 
-                        <Border Background="{StaticResource PanelBrush}"
+                        <Border Background="{StaticResource SurfaceBrush}"
                                 BorderBrush="{StaticResource BorderBrush}"
                                 BorderThickness="1"
                                 CornerRadius="12"
-                                Padding="18"
-                                Margin="0,0,0,16">
+                                Padding="16"
+                                Margin="0,0,0,10">
                             <StackPanel>
                                 <TextBlock Text="Routing Inspector"
-                                           FontWeight="SemiBold"
-                                           FontSize="15"/>
-                                <TextBlock Text="Показывает, какое правило должно сработать для домена или IP."
-                                           Foreground="{StaticResource MutedBrush}"
-                                           FontSize="12"
-                                           Margin="0,5,0,14"/>
+                                           Style="{StaticResource SectionTitleStyle}"/>
+                                <TextBlock Text="Показывает ожидаемое правило для домена или IP."
+                                           Style="{StaticResource CaptionStyle}"
+                                           Margin="0,4,0,11"/>
 
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="12"/>
+                                        <ColumnDefinition Width="8"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
                                     <TextBox x:Name="InspectorTargetText"
-                                             Height="40"
+                                             Height="36"
                                              VerticalContentAlignment="Center"
                                              ToolTip="ozon.ru или 8.8.8.8"/>
                                     <Button Grid.Column="2"
@@ -613,9 +691,9 @@
                                             Click="InspectRoute_Click"/>
                                 </Grid>
 
-                                <Grid Margin="0,18,0,0">
+                                <Grid Margin="0,13,0,0">
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="140"/>
+                                        <ColumnDefinition Width="110"/>
                                         <ColumnDefinition Width="*"/>
                                     </Grid.ColumnDefinitions>
                                     <Grid.RowDefinitions>
@@ -625,25 +703,27 @@
                                         <RowDefinition Height="Auto"/>
                                     </Grid.RowDefinitions>
 
-                                    <TextBlock Text="Маршрут" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
-                                    <TextBlock x:Name="InspectorRouteText" Grid.Column="1" Text="—" Margin="0,0,0,8"/>
+                                    <TextBlock Text="Маршрут" Style="{StaticResource CaptionStyle}" Margin="0,0,0,6"/>
+                                    <TextBlock x:Name="InspectorRouteText" Grid.Column="1" Text="—" FontSize="12" Margin="0,0,0,6"/>
 
-                                    <TextBlock Grid.Row="1" Text="Правило" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
-                                    <TextBlock x:Name="InspectorRuleText" Grid.Row="1" Grid.Column="1" Text="—" Margin="0,0,0,8"/>
+                                    <TextBlock Grid.Row="1" Text="Правило" Style="{StaticResource CaptionStyle}" Margin="0,0,0,6"/>
+                                    <TextBlock x:Name="InspectorRuleText" Grid.Row="1" Grid.Column="1" Text="—" FontSize="12" Margin="0,0,0,6"/>
 
-                                    <TextBlock Grid.Row="2" Text="DNS" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
+                                    <TextBlock Grid.Row="2" Text="DNS" Style="{StaticResource CaptionStyle}" Margin="0,0,0,6"/>
                                     <TextBlock x:Name="InspectorResolvedText"
                                                Grid.Row="2"
                                                Grid.Column="1"
                                                Text="—"
+                                               FontSize="12"
                                                TextWrapping="Wrap"
-                                               Margin="0,0,0,8"/>
+                                               Margin="0,0,0,6"/>
 
-                                    <TextBlock Grid.Row="3" Text="Комментарий" Foreground="{StaticResource MutedBrush}"/>
+                                    <TextBlock Grid.Row="3" Text="Комментарий" Style="{StaticResource CaptionStyle}"/>
                                     <TextBlock x:Name="InspectorNoteText"
                                                Grid.Row="3"
                                                Grid.Column="1"
                                                Text="—"
+                                               FontSize="12"
                                                TextWrapping="Wrap"/>
                                 </Grid>
                             </StackPanel>
@@ -652,26 +732,30 @@
                         <ItemsControl x:Name="RulesList">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <Border Background="{StaticResource PanelBrush}"
+                                    <Border Background="{StaticResource SurfaceBrush}"
                                             BorderBrush="{StaticResource BorderBrush}"
                                             BorderThickness="1"
                                             CornerRadius="9"
-                                            Padding="14"
-                                            Margin="0,0,0,8">
+                                            Padding="11"
+                                            Margin="0,0,0,7">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="*"/>
-                                                <ColumnDefinition Width="140"/>
+                                                <ColumnDefinition Width="110"/>
                                                 <ColumnDefinition Width="Auto"/>
                                             </Grid.ColumnDefinitions>
-                                            <TextBlock Text="{Binding Pattern}" VerticalAlignment="Center"/>
+                                            <TextBlock Text="{Binding Pattern}"
+                                                       VerticalAlignment="Center"
+                                                       FontSize="12"/>
                                             <TextBlock Grid.Column="1"
                                                        Text="{Binding ActionDisplay}"
                                                        Foreground="{StaticResource MutedBrush}"
-                                                       VerticalAlignment="Center"/>
+                                                       VerticalAlignment="Center"
+                                                       FontSize="11"/>
                                             <Button Grid.Column="2"
                                                     Style="{StaticResource SecondaryButton}"
-                                                    Padding="10,6"
+                                                    Padding="9,4"
+                                                    MinHeight="28"
                                                     Content="Удалить"
                                                     Tag="{Binding Id}"
                                                     Click="DeleteRule_Click"/>
@@ -684,52 +768,60 @@
                 </ScrollViewer>
 
                 <!-- CONNECTIONS -->
-                <Grid x:Name="ConnectionsPage" Visibility="Collapsed">
+                <Grid x:Name="ConnectionsPage"
+                      Visibility="Collapsed">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="14"/>
+                        <RowDefinition Height="10"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
 
                     <DockPanel>
                         <TextBlock Text="Последние соединения Xray"
-                                   Foreground="{StaticResource MutedBrush}"
+                                   Style="{StaticResource CaptionStyle}"
                                    VerticalAlignment="Center"/>
                         <Button DockPanel.Dock="Right"
                                 Style="{StaticResource SecondaryButton}"
+                                Padding="10,5"
+                                MinHeight="30"
                                 Content="Очистить"
                                 Click="ClearConnections_Click"/>
                     </DockPanel>
 
-                    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+                    <ScrollViewer Grid.Row="2"
+                                  VerticalScrollBarVisibility="Auto">
                         <ItemsControl x:Name="ConnectionsList">
                             <ItemsControl.ItemTemplate>
                                 <DataTemplate>
-                                    <Border Background="{StaticResource PanelBrush}"
+                                    <Border Background="{StaticResource SurfaceBrush}"
                                             BorderBrush="{StaticResource BorderBrush}"
                                             BorderThickness="1"
                                             CornerRadius="8"
-                                            Padding="12"
+                                            Padding="10"
                                             Margin="0,0,0,6">
                                         <Grid>
                                             <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="82"/>
+                                                <ColumnDefinition Width="70"/>
                                                 <ColumnDefinition Width="*"/>
-                                                <ColumnDefinition Width="120"/>
-                                                <ColumnDefinition Width="220"/>
+                                                <ColumnDefinition Width="92"/>
+                                                <ColumnDefinition Width="170"/>
                                             </Grid.ColumnDefinitions>
                                             <TextBlock Text="{Binding TimeDisplay}"
-                                                       Foreground="{StaticResource MutedBrush}"/>
+                                                       Foreground="{StaticResource MutedBrush}"
+                                                       FontSize="11"/>
                                             <TextBlock Grid.Column="1"
                                                        Text="{Binding Destination}"
-                                                       TextTrimming="CharacterEllipsis"/>
+                                                       TextTrimming="CharacterEllipsis"
+                                                       FontSize="12"/>
                                             <TextBlock Grid.Column="2"
                                                        Text="{Binding RouteDisplay}"
-                                                       FontWeight="SemiBold"/>
+                                                       FontWeight="SemiBold"
+                                                       FontSize="11"/>
                                             <TextBlock Grid.Column="3"
                                                        Text="{Binding Source}"
                                                        Foreground="{StaticResource MutedBrush}"
-                                                       TextTrimming="CharacterEllipsis"/>
+                                                       TextTrimming="CharacterEllipsis"
+                                                       FontSize="11"/>
                                         </Grid>
                                     </Border>
                                 </DataTemplate>
@@ -741,81 +833,79 @@
                 <!-- LOGS -->
                 <Border x:Name="LogsPage"
                         Visibility="Collapsed"
-                        Background="{StaticResource PanelBrush}"
+                        Background="{StaticResource SurfaceBrush}"
                         BorderBrush="{StaticResource BorderBrush}"
                         BorderThickness="1"
                         CornerRadius="12"
-                        Padding="14">
+                        Padding="12">
                     <ListBox x:Name="LogList"
-                             Background="Transparent"
-                             Foreground="{StaticResource TextBrush}"
-                             BorderThickness="0"
                              FontFamily="Cascadia Mono, Consolas"
-                             FontSize="12"/>
+                             FontSize="11"/>
                 </Border>
 
                 <!-- SETTINGS -->
                 <ScrollViewer x:Name="SettingsPage"
                               Visibility="Collapsed"
                               VerticalScrollBarVisibility="Auto">
-                    <StackPanel>
-                        <Border Background="{StaticResource PanelBrush}"
+                    <StackPanel Width="640"
+                                HorizontalAlignment="Left">
+                        <Border Background="{StaticResource SurfaceBrush}"
                                 BorderBrush="{StaticResource BorderBrush}"
                                 BorderThickness="1"
                                 CornerRadius="12"
-                                Padding="20"
-                                Margin="0,0,0,16">
+                                Padding="16"
+                                Margin="0,0,0,10">
                             <StackPanel>
                                 <TextBlock Text="Обновления"
-                                           FontWeight="SemiBold"
-                                           FontSize="15"/>
+                                           Style="{StaticResource SectionTitleStyle}"/>
                                 <CheckBox x:Name="AutoUpdateCheck"
                                           Content="Проверять обновления при запуске"
                                           Checked="AutoUpdateCheck_Changed"
                                           Unchecked="AutoUpdateCheck_Changed"
-                                          Margin="0,14,0,12"/>
+                                          Margin="0,12,0,10"/>
                                 <Button Style="{StaticResource SecondaryButton}"
                                         HorizontalAlignment="Left"
+                                        Padding="11,6"
+                                        MinHeight="32"
                                         Content="Проверить сейчас"
                                         Click="CheckUpdates_Click"/>
                             </StackPanel>
                         </Border>
 
-                        <Border Background="{StaticResource PanelBrush}"
+                        <Border Background="{StaticResource SurfaceBrush}"
                                 BorderBrush="{StaticResource BorderBrush}"
                                 BorderThickness="1"
                                 CornerRadius="12"
-                                Padding="20">
+                                Padding="16">
                             <StackPanel>
                                 <TextBlock Text="Локальные порты"
-                                           FontWeight="SemiBold"
-                                           FontSize="15"/>
-                                <Grid Margin="0,14,0,0">
+                                           Style="{StaticResource SectionTitleStyle}"/>
+                                <Grid Margin="0,12,0,0">
                                     <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="120"/>
-                                        <ColumnDefinition Width="120"/>
-                                        <ColumnDefinition Width="24"/>
-                                        <ColumnDefinition Width="120"/>
-                                        <ColumnDefinition Width="120"/>
+                                        <ColumnDefinition Width="60"/>
+                                        <ColumnDefinition Width="100"/>
+                                        <ColumnDefinition Width="18"/>
+                                        <ColumnDefinition Width="50"/>
+                                        <ColumnDefinition Width="100"/>
                                         <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
 
                                     <TextBlock Text="SOCKS"
                                                VerticalAlignment="Center"
-                                               Foreground="{StaticResource MutedBrush}"/>
+                                               Style="{StaticResource CaptionStyle}"/>
                                     <TextBox x:Name="SocksPortText"
                                              Grid.Column="1"
-                                             Height="38"
+                                             Height="36"
                                              VerticalContentAlignment="Center"/>
 
                                     <TextBlock Grid.Column="3"
                                                Text="HTTP"
                                                VerticalAlignment="Center"
-                                               Foreground="{StaticResource MutedBrush}"/>
+                                               Style="{StaticResource CaptionStyle}"/>
                                     <TextBox x:Name="HttpPortText"
                                              Grid.Column="4"
-                                             Height="38"
+                                             Height="36"
                                              VerticalContentAlignment="Center"/>
 
                                     <Button Grid.Column="6"

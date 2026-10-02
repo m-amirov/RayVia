@@ -898,7 +898,7 @@ public partial class MainWindow : Window
     private static Version CurrentVersion()
     {
         var version = Assembly.GetExecutingAssembly().GetName().Version
-                      ?? new Version(0, 2, 0);
+                      ?? new Version(0, 2, 1);
 
         return new Version(
             version.Major,
@@ -950,5 +950,44 @@ public partial class MainWindow : Window
 
         PageTitle.Text = title;
         PageSubtitle.Text = subtitle;
+        SetActiveNavigation(page);
+    }
+
+    private void SetActiveNavigation(FrameworkElement page)
+    {
+        var buttons = new[]
+        {
+            NavHomeButton,
+            NavSubscriptionsButton,
+            NavServersButton,
+            NavRoutingButton,
+            NavConnectionsButton,
+            NavLogsButton,
+            NavSettingsButton
+        };
+
+        foreach (var button in buttons)
+        {
+            button.Background = Brushes.Transparent;
+            button.Foreground = (Brush)FindResource("SidebarMutedBrush");
+        }
+
+        var active = NavHomeButton;
+
+        if (page == SubscriptionsPage)
+            active = NavSubscriptionsButton;
+        else if (page == ServersPage)
+            active = NavServersButton;
+        else if (page == RoutingPage)
+            active = NavRoutingButton;
+        else if (page == ConnectionsPage)
+            active = NavConnectionsButton;
+        else if (page == LogsPage)
+            active = NavLogsButton;
+        else if (page == SettingsPage)
+            active = NavSettingsButton;
+
+        active.Background = (Brush)FindResource("SidebarSelectedBrush");
+        active.Foreground = (Brush)FindResource("SidebarTextBrush");
     }
 }
