@@ -8,9 +8,18 @@
     <UseWPF>true</UseWPF>
     <AssemblyName>Rayvia</AssemblyName>
     <RootNamespace>Rayvia</RootNamespace>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Authors>Rayvia</Authors>
     <Description>Universal proxy client for Windows.</Description>
+    <ApplicationIcon>Assets\rayvia.ico</ApplicationIcon>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\rayvia.ico"/>
+  </ItemGroup>
+
+  <Target Name="GenerateRayviaIcon" BeforeTargets="PrepareForBuild" Condition="'$(OS)' == 'Windows_NT'">
+    <Exec Command="powershell.exe -NoProfile -ExecutionPolicy Bypass -File &quot;$(MSBuildProjectDirectory)\..\..\tools\GenerateIcon.ps1&quot; -OutputPath &quot;$(MSBuildProjectDirectory)\Assets\rayvia.ico&quot;"/>
+  </Target>
 
 </Project>

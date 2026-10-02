@@ -1,4 +1,5 @@
 using System.Net.Http;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Rayvia.Models;
@@ -11,7 +12,7 @@ public sealed class SubscriptionService
 
     public SubscriptionService()
     {
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("Rayvia/0.1");
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd("Rayvia/0.2");
         _http.Timeout = TimeSpan.FromSeconds(20);
     }
 
@@ -39,12 +40,22 @@ public sealed class SubscriptionService
             if (node is null)
                 continue;
 
+            node.Id = StableNodeId(subscription.Id, line);
             node.SourceSubscriptionId = subscription.Id;
             nodes.Add(node);
         }
 
         subscription.LastUpdated = DateTimeOffset.Now;
-        return nodes;
+        return nodes
+            .GroupBy(x => x.Id, StringComparer.Ordinal)
+            .Select(x => x.First())
+            .ToList();
+    }
+
+    private static string StableNodeId(string subscriptionId, string source)
+    {
+        var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(subscriptionId + "\n" + source));
+        return Convert.ToHexString(bytes).ToLowerInvariant()[..24];
     }
 
     private static bool IsNodeLink(string value)

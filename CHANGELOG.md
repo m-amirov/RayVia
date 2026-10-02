@@ -1,13 +1,26 @@
 # Changelog
 
+## 0.2.0
+
+- исправлен запуск приложения: главное окно теперь создаётся явно;
+- добавлен startup crash log;
+- добавлен TUN-режим на встроенном Xray TUN + Wintun;
+- добавлена проверка конфигурации Xray перед запуском;
+- добавлена проверка задержки серверов;
+- добавлен автоматический выбор сервера;
+- добавлены группы серверов;
+- добавлен Routing Inspector;
+- добавлены Live Connections по access log Xray;
+- идентификаторы серверов стали стабильными между обновлениями подписки;
+- добавлена проверка SHA-256 обновлений;
+- добавлена иконка Rayvia в приложение и установщик;
+- README содержит прямую ссылку на установщик.
+
 ## 0.1.0
 
-- Windows desktop client.
-- VLESS, VMess, Trojan and Shadowsocks subscription parsing.
-- Xray core download on first connection.
-- System Proxy mode.
-- Smart routing: Russian IP ranges and sites directly, other traffic through the selected server.
-- Custom domain/IP routing rules.
-- Settings and logs stored locally.
-- Automatic update checks and installer download from GitHub Releases.
-- Self-contained x64 installer.
+- первая Windows-версия;
+- System Proxy;
+- VLESS/REALITY, VMess, Trojan и Shadowsocks;
+- подписки;
+- базовая маршрутизация;
+- обновления через GitHub Releases.

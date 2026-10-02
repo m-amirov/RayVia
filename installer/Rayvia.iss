@@ -1,5 +1,5 @@
 #ifndef MyAppVersion
-  #define MyAppVersion "0.1.0"
+  #define MyAppVersion "0.2.0"
 #endif
 
 #ifndef PublishDir
@@ -29,6 +29,7 @@ ArchitecturesInstallIn64BitMode=x64compatible
 CloseApplications=yes
 RestartApplications=yes
 UninstallDisplayIcon={app}\{#MyAppExeName}
+SetupIconFile=..\src\Rayvia\Assets\rayvia.ico
 SetupLogging=yes
 
 [Languages]
