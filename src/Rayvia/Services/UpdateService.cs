@@ -13,12 +13,15 @@ public sealed class UpdateService
     private const string InstallerAssetName = "Rayvia-Setup-x64.exe";
     private const string ChecksumsAssetName = "SHA256SUMS.txt";
 
-    private readonly HttpClient _http = new();
+    private readonly HttpClient _http;
+    private readonly string? _updatesDirectory;
 
-    public UpdateService()
+    public UpdateService(HttpClient? http = null, string? updatesDirectory = null)
     {
+        _http = http ?? new HttpClient();
         _http.DefaultRequestHeaders.UserAgent.ParseAdd("Rayvia-Updater/0.3.1");
         _http.Timeout = TimeSpan.FromSeconds(45);
+        _updatesDirectory = updatesDirectory;
     }
 
     public async Task<UpdateInfo?> CheckAndDownloadAsync(
@@ -65,10 +68,8 @@ public sealed class UpdateService
         var expectedHash = await ReadExpectedHashAsync(checksumsUrl, cancellationToken)
                            ?? throw new InvalidOperationException("Обновление отклонено: SHA256SUMS.txt не содержит валидный hash установщика.");
 
-        var directory = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Rayvia",
-            "Updates");
+        var directory = _updatesDirectory ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Rayvia", "Updates");
 
         Directory.CreateDirectory(directory);
         foreach (var stalePart in Directory.EnumerateFiles(directory, "*.part"))
