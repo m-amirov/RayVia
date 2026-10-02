@@ -4,11 +4,20 @@ Rayvia — универсальный Windows-клиент для Xray.
 
 ## Скачать
 
-**[Скачать Rayvia 0.3.0 — установщик Windows x64](https://github.com/m-amirov/Rayvia/releases/download/v0.3.0/Rayvia-Setup-x64.exe)**
+**[Скачать Rayvia 0.3.1 — установщик Windows x64](https://github.com/m-amirov/Rayvia/releases/download/v0.3.1/Rayvia-Setup-x64.exe)**
 
-Страница релиза: [v0.3.0](https://github.com/m-amirov/Rayvia/releases/tag/v0.3.0)
+Страница релиза: [v0.3.1](https://github.com/m-amirov/Rayvia/releases/tag/v0.3.1)
 
 Установщик self-contained: отдельно устанавливать .NET не требуется.
+
+## Исправление 0.3.1
+
+- System Proxy теперь записывается в Windows как единый `127.0.0.1:PORT`, а не как строка `http=...;https=...`;
+- адрес и порт корректно отображаются в «Параметры Windows → Прокси»;
+- перед включением Rayvia сохраняет предыдущие системные proxy-настройки;
+- при отключении предыдущие настройки восстанавливаются;
+- если пользователь или другая программа изменили системный proxy после Rayvia, Rayvia не перезаписывает эти новые настройки;
+- добавлена очистка некорректного значения, оставленного версиями до 0.3.1.
 
 ## Что изменилось в 0.3.0
 

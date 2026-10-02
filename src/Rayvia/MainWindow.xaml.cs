@@ -922,7 +922,7 @@ public partial class MainWindow : Window
     private static Version CurrentVersion()
     {
         var version = Assembly.GetExecutingAssembly().GetName().Version
-                      ?? new Version(0, 3, 0);
+                      ?? new Version(0, 3, 1);
 
         return new Version(
             version.Major,
