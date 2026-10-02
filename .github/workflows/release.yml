@@ -70,24 +70,19 @@ jobs:
           $hash = (Get-FileHash artifacts/Rayvia-Setup-x64.exe -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  Rayvia-Setup-x64.exe" | Set-Content artifacts/SHA256SUMS.txt
 
-      - name: Create tag for manual release
-        if: github.event_name == 'workflow_dispatch'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag "${{ steps.version.outputs.tag }}"
-          git push origin "${{ steps.version.outputs.tag }}"
-
       - name: Create GitHub release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ steps.version.outputs.tag }}" `
-            artifacts/Rayvia-Setup-x64.exe `
-            artifacts/SHA256SUMS.txt `
-            --title "Rayvia ${{ steps.version.outputs.version }}" `
-            --generate-notes
+          $args = @(
+            "release", "create", "${{ steps.version.outputs.tag }}",
+            "artifacts/Rayvia-Setup-x64.exe",
+            "artifacts/SHA256SUMS.txt",
+            "--title", "Rayvia ${{ steps.version.outputs.version }}",
+            "--generate-notes"
+          )
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $args += @("--target", "${{ github.sha }}")
+          }
+          gh @args
