@@ -62,7 +62,7 @@ public sealed class SingleInstanceService : IDisposable
     private const string HandoffReadyEventPrefix = "Local\\Rayvia.ElevationHandoffReady.";
 
     private Mutex? _arbitrationMutex;
-    private Mutex? _mutex;
+    private MutexOwnership? _mutex;
     private CancellationTokenSource? _listenerCancellation;
     private Task? _listener;
     private ElevationHandoff? _handoff;
@@ -85,7 +85,7 @@ public sealed class SingleInstanceService : IDisposable
             return false;
         }
 
-        _mutex = mutex;
+        _mutex = MutexOwnership.TakeOnCurrentThread(mutex);
         StartCommandListener();
         return true;
     }
@@ -132,38 +132,32 @@ public sealed class SingleInstanceService : IDisposable
             return false;
 
         var deadline = DateTime.UtcNow + timeout;
+        MutexOwnership? ownership = null;
         try
         {
             using var signal = EventWaitHandle.OpenExisting(GetHandoffEventName(handoff.Token));
             var remaining = Remaining(deadline);
-            if (remaining <= TimeSpan.Zero || !await WaitOneAsync(signal, remaining, cancellationToken))
+            if (remaining <= TimeSpan.Zero || !await WaitForEventAsync(signal, remaining, cancellationToken))
                 return false;
 
             var mutex = new Mutex(initiallyOwned: false, MutexName, out _);
-            var acquired = await WaitOneAsync(mutex, Remaining(deadline), cancellationToken);
-            if (!acquired)
-            {
-                mutex.Dispose();
+            ownership = MutexOwnership.StartDedicated(mutex, Remaining(deadline));
+            if (!await ownership.WaitForAcquisitionAsync(Remaining(deadline), cancellationToken))
                 return false;
-            }
 
-            try
-            {
-                using var ready = EventWaitHandle.OpenExisting(GetHandoffReadyEventName(handoff.Token));
-                _mutex = mutex;
-                ready.Set();
-                return true;
-            }
-            catch
-            {
-                try { mutex.ReleaseMutex(); } catch { }
-                mutex.Dispose();
-                return false;
-            }
+            using var ready = EventWaitHandle.OpenExisting(GetHandoffReadyEventName(handoff.Token));
+            ready.Set();
+            _mutex = ownership;
+            ownership = null;
+            return true;
         }
         catch (WaitHandleCannotBeOpenedException)
         {
             return false;
+        }
+        finally
+        {
+            ownership?.Dispose();
         }
     }
 
@@ -180,7 +174,7 @@ public sealed class SingleInstanceService : IDisposable
                 mutex.Dispose();
                 return false;
             }
-            _mutex = mutex;
+            _mutex = MutexOwnership.TakeOnCurrentThread(mutex);
         }
 
         ClearHandoffSignals();
@@ -267,7 +261,7 @@ public sealed class SingleInstanceService : IDisposable
     private static string GetHandoffReadyEventName(string token) => HandoffReadyEventPrefix + token;
     private static TimeSpan Remaining(DateTime deadline) => deadline - DateTime.UtcNow;
 
-    private static async Task<bool> WaitOneAsync(WaitHandle handle, TimeSpan timeout, CancellationToken cancellationToken)
+    private static async Task<bool> WaitForEventAsync(EventWaitHandle handle, TimeSpan timeout, CancellationToken cancellationToken)
     {
         if (timeout <= TimeSpan.Zero)
             return false;
@@ -296,16 +290,20 @@ public sealed class SingleInstanceService : IDisposable
 
     private void ReleaseMainMutex()
     {
-        try { _mutex?.ReleaseMutex(); } catch { }
-        _mutex?.Dispose();
+        var ownership = _mutex;
         _mutex = null;
+        ownership?.Dispose();
     }
 
     private void ReleaseArbitrationMutex()
     {
-        try { _arbitrationMutex?.ReleaseMutex(); } catch { }
-        _arbitrationMutex?.Dispose();
+        var mutex = _arbitrationMutex;
         _arbitrationMutex = null;
+        if (mutex is null)
+            return;
+
+        try { mutex.ReleaseMutex(); }
+        finally { mutex.Dispose(); }
     }
 
     private void ClearHandoffSignals()
@@ -349,5 +347,110 @@ public sealed class SingleInstanceService : IDisposable
         _listenerCancellation?.Dispose();
         _listenerCancellation = null;
         _listener = null;
+    }
+
+    private sealed class MutexOwnership : IDisposable
+    {
+        private readonly Mutex _mutex;
+        private readonly Thread? _ownerThread;
+        private readonly ManualResetEvent? _releaseRequest;
+        private readonly TaskCompletionSource<bool>? _acquired;
+        private readonly TimeSpan _timeout;
+        private Exception? _releaseException;
+        private int _disposed;
+
+        private MutexOwnership(Mutex mutex)
+        {
+            _mutex = mutex;
+        }
+
+        private MutexOwnership(Mutex mutex, TimeSpan timeout)
+        {
+            _mutex = mutex;
+            _timeout = timeout;
+            _releaseRequest = new ManualResetEvent(false);
+            _acquired = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            _ownerThread = new Thread(RunDedicatedOwner)
+            {
+                IsBackground = true,
+                Name = "Rayvia.SingleInstance.MutexOwner"
+            };
+            _ownerThread.Start();
+        }
+
+        public static MutexOwnership TakeOnCurrentThread(Mutex mutex)
+            => new(mutex);
+
+        public static MutexOwnership StartDedicated(Mutex mutex, TimeSpan timeout)
+            => new(mutex, timeout);
+
+        public async Task<bool> WaitForAcquisitionAsync(TimeSpan timeout, CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await _acquired!.Task.WaitAsync(timeout, cancellationToken);
+            }
+            catch (TimeoutException)
+            {
+                return false;
+            }
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            if (_ownerThread is null)
+            {
+                try { _mutex.ReleaseMutex(); }
+                finally { _mutex.Dispose(); }
+                return;
+            }
+
+            _releaseRequest!.Set();
+            _ownerThread.Join();
+            try
+            {
+                if (_releaseException is not null)
+                    throw new InvalidOperationException("Dedicated mutex owner failed to release ownership.", _releaseException);
+            }
+            finally
+            {
+                _releaseRequest.Dispose();
+                _mutex.Dispose();
+            }
+        }
+
+        private void RunDedicatedOwner()
+        {
+            var acquired = false;
+            try
+            {
+                int index;
+                try
+                {
+                    index = WaitHandle.WaitAny([_mutex, _releaseRequest!], _timeout);
+                }
+                catch (AbandonedMutexException)
+                {
+                    index = 0;
+                }
+
+                acquired = index == 0;
+                _acquired!.TrySetResult(acquired);
+                if (!acquired)
+                    return;
+
+                _releaseRequest!.WaitOne();
+                try { _mutex.ReleaseMutex(); }
+                catch (Exception ex) { _releaseException = ex; }
+            }
+            catch (Exception ex)
+            {
+                if (!_acquired!.TrySetException(ex) && acquired)
+                    _releaseException = ex;
+            }
+        }
     }
 }

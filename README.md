@@ -4,11 +4,19 @@ Rayvia — универсальный Windows-клиент для Xray.
 
 ## Скачать
 
-**[Скачать Rayvia 0.3.1 — установщик Windows x64](https://github.com/m-amirov/Rayvia/releases/download/v0.3.1/Rayvia-Setup-x64.exe)**
+**[Скачать Rayvia 0.4.0 — установщик Windows x64](https://github.com/m-amirov/RayVia/releases/download/v0.4.0/Rayvia-Setup-x64.exe)**
 
-Страница релиза: [v0.3.1](https://github.com/m-amirov/Rayvia/releases/tag/v0.3.1)
+Страница релиза: [v0.4.0](https://github.com/m-amirov/RayVia/releases/tag/v0.4.0)
 
 Установщик self-contained: отдельно устанавливать .NET не требуется.
+
+## Изменения в 0.4.0
+
+- усилен детерминированный handoff single-instance ownership для TUN и повышенного запуска;
+- добавлены crash recovery, runtime state и безопасное восстановление System Proxy;
+- добавлены проверка целостности Xray core, fail-closed updater и атомарное сохранение настроек;
+- улучшены lifecycle connection state, cleanup Xray/System Proxy и снимок активного сервера;
+- добавлены канонические идентификаторы серверов, миграция legacy-узлов и CI-проверки сборки.
 
 ## Исправление 0.3.1
 

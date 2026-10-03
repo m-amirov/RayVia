@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0
+
+- добавлен детерминированный handoff single-instance ownership при запросе прав администратора для TUN;
+- ownership handoff защищён arbitration protocol: competing экземпляры не могут перехватить mutex между parent и elevated child;
+- добавлены crash recovery, runtime state marker и безопасное восстановление System Proxy;
+- cleanup connection lifecycle теперь всегда пытается восстановить System Proxy и остановить Xray, сохраняя ошибки и recovery information при частичном сбое;
+- добавлена проверка активной версии Xray core и целостности критических файлов;
+- updater переведён на fail-closed проверку SHA-256 и атомарную установку;
+- добавлены канонические идентификаторы серверов, миграция legacy-узлов и разрешение коллизий между подписками;
+- добавлен immutable snapshot активного сервера и явная state machine подключения;
+- настроены CI-gated Release/installer checks для self-contained Windows x64 сборки.
+
 ## 0.3.1
 
 - исправлена запись Windows System Proxy: теперь используется `127.0.0.1:PORT`;

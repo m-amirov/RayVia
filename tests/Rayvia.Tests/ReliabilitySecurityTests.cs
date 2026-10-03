@@ -60,6 +60,59 @@ public sealed class ReliabilitySecurityTests
     }
 
     [Fact]
+    public async Task ChildHandoffOwnershipCanBeDisposedAndReacquired()
+    {
+        using var parent = new SingleInstanceService();
+        using var child = new SingleInstanceService();
+        var handoff = ElevationHandoff.Create(Environment.ProcessId);
+
+        Assert.True(parent.TryAcquire());
+        Assert.True(parent.BeginElevationHandoff(handoff));
+        var takeover = child.TryAcquireForHandoffAsync(handoff, TimeSpan.FromSeconds(1));
+        Assert.True(parent.SignalElevationHandoff());
+        Assert.True(await takeover);
+        Assert.True(parent.WaitForElevationTakeover(TimeSpan.FromSeconds(1)));
+        parent.CompleteElevationHandoff();
+
+        DisposeOnDedicatedThread(child);
+        using var replacement = new SingleInstanceService();
+        Assert.True(replacement.TryAcquire());
+    }
+
+    [Fact]
+    public async Task RepeatedHandoffAfterTakeoverDoesNotLeaveHiddenOwnership()
+    {
+        using var firstParent = new SingleInstanceService();
+        using var firstChild = new SingleInstanceService();
+        var firstHandoff = ElevationHandoff.Create(Environment.ProcessId);
+
+        Assert.True(firstParent.TryAcquire());
+        Assert.True(firstParent.BeginElevationHandoff(firstHandoff));
+        var firstTakeover = firstChild.TryAcquireForHandoffAsync(firstHandoff, TimeSpan.FromSeconds(1));
+        Assert.True(firstParent.SignalElevationHandoff());
+        Assert.True(await firstTakeover);
+        Assert.True(firstParent.WaitForElevationTakeover(TimeSpan.FromSeconds(1)));
+        firstParent.CompleteElevationHandoff();
+        DisposeOnDedicatedThread(firstChild);
+
+        using var secondParent = new SingleInstanceService();
+        using var secondChild = new SingleInstanceService();
+        var secondHandoff = ElevationHandoff.Create(Environment.ProcessId);
+
+        Assert.True(secondParent.TryAcquire());
+        Assert.True(secondParent.BeginElevationHandoff(secondHandoff));
+        var secondTakeover = secondChild.TryAcquireForHandoffAsync(secondHandoff, TimeSpan.FromSeconds(1));
+        Assert.True(secondParent.SignalElevationHandoff());
+        Assert.True(await secondTakeover);
+        Assert.True(secondParent.WaitForElevationTakeover(TimeSpan.FromSeconds(1)));
+        secondParent.CompleteElevationHandoff();
+        DisposeOnDedicatedThread(secondChild);
+
+        using var finalOwner = new SingleInstanceService();
+        Assert.True(finalOwner.TryAcquire());
+    }
+
+    [Fact]
     public void AbortedElevationHandoffLeavesParentOwner()
     {
         using var parent = new SingleInstanceService();
@@ -85,6 +138,11 @@ public sealed class ReliabilitySecurityTests
         service.Delete();
         Assert.Null(service.Load());
     }
+
+    private static void DisposeOnDedicatedThread(SingleInstanceService service)
+        => Task.Factory.StartNew(service.Dispose, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)
+            .GetAwaiter()
+            .GetResult();
 
     [Fact]
     public void MalformedOrMissingUpdateChecksumIsRejected()
