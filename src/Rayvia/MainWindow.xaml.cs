@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Rayvia.Models;
 using Rayvia.Services;
 
@@ -129,7 +130,7 @@ public partial class MainWindow : Window
         try { await _connectionCoordinator.DisconnectAsync(); } catch (Exception ex) { _log.Write("Ошибка shutdown: " + ex.Message); }
         _liveConnections.Dispose();
         _connectionCoordinator.Dispose();
-        Close();
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(Close));
     }
 
     private void CleanGroupMembership()
