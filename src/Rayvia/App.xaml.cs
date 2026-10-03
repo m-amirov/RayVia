@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.IO;
 using System.Windows;
 using System.Windows.Threading;
@@ -9,7 +10,6 @@ public partial class App : Application
 {
     private static readonly TimeSpan ElevationHandoffTimeout = TimeSpan.FromSeconds(30);
     private SingleInstanceService? _singleInstance;
-    private EventWaitHandle? _elevationHandoffSignal;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -20,27 +20,33 @@ public partial class App : Application
         {
             if (ElevationHandoff.TryParse(e.Args, out var handoff))
             {
+                _singleInstance = new SingleInstanceService();
+                if (!_singleInstance.TryAcquireForHandoffAsync(handoff!, ElevationHandoffTimeout).GetAwaiter().GetResult())
+                {
+                    Shutdown(1);
+                    return;
+                }
+
                 if (!SingleInstanceService.WaitForParentExitAsync(handoff!, ElevationHandoffTimeout).GetAwaiter().GetResult())
                 {
+                    _singleInstance.Dispose();
+                    _singleInstance = null;
                     Shutdown(1);
                     return;
                 }
+                _singleInstance.StartCommandListener();
             }
-
-            _singleInstance = new SingleInstanceService();
-            if (!_singleInstance.TryAcquire())
+            else
             {
-                if (handoff is not null)
+                _singleInstance = new SingleInstanceService();
+                if (!_singleInstance.TryAcquire())
                 {
-                    Shutdown(1);
+                    _ = SingleInstanceService.SendCommandAsync(
+                        new InstanceCommand("activate", e.Args),
+                        TimeSpan.FromMilliseconds(500));
+                    Shutdown(0);
                     return;
                 }
-
-                _ = SingleInstanceService.SendCommandAsync(
-                    new InstanceCommand("activate", e.Args),
-                    TimeSpan.FromMilliseconds(500));
-                Shutdown(0);
-                return;
             }
 
             var recoveryLog = new LogService();
@@ -71,8 +77,6 @@ public partial class App : Application
             Exit += (_, _) =>
             {
                 _singleInstance?.Dispose();
-                _elevationHandoffSignal?.Dispose();
-                _elevationHandoffSignal = null;
             };
 
             var autoConnect = e.Args.Any(x => string.Equals(x, "--autoconnect", StringComparison.OrdinalIgnoreCase));
@@ -130,23 +134,42 @@ public partial class App : Application
         if (_singleInstance is null)
             return false;
 
+        var singleInstance = _singleInstance;
         var handoff = ElevationHandoff.Create(Environment.ProcessId);
-        _elevationHandoffSignal = SingleInstanceService.CreateHandoffSignal(handoff);
+        if (!singleInstance.BeginElevationHandoff(handoff))
+            return false;
+
+        Process? child = null;
         try
         {
-            ElevationService.RestartElevated(autoConnect, handoff);
+            child = ElevationService.RestartElevated(autoConnect, handoff);
+            if (!singleInstance.SignalElevationHandoff())
+                throw new InvalidOperationException("Не удалось сигнализировать передачу ownership.");
+
+            if (!singleInstance.WaitForElevationTakeover(ElevationHandoffTimeout))
+            {
+                try
+                {
+                    if (child is { HasExited: false })
+                        child.Kill(entireProcessTree: true);
+                    child?.WaitForExit(1000);
+                }
+                catch { }
+
+                if (!singleInstance.AbortElevationHandoff())
+                    throw new InvalidOperationException("Повышенный Rayvia не подтвердил передачу ownership.");
+                return false;
+            }
+
+            singleInstance.CompleteElevationHandoff();
+            _singleInstance = null;
+            Shutdown(0);
+            return true;
         }
         catch
         {
-            _elevationHandoffSignal.Dispose();
-            _elevationHandoffSignal = null;
+            try { singleInstance.AbortElevationHandoff(); } catch { }
             return false;
         }
-
-        _singleInstance.Dispose();
-        _singleInstance = null;
-        _elevationHandoffSignal.Set();
-        Shutdown(0);
-        return true;
     }
 }

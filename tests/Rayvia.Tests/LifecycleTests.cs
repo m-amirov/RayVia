@@ -38,4 +38,82 @@ public sealed class LifecycleTests
         await coordinator.ConnectAsync(new ProxyNode { Protocol = "vless", Host = "example.com", Port = 443, UserId = "11111111-1111-1111-1111-111111111111" }, new AppSettings()); xray.Crash(); await Task.Delay(50);
         Assert.Equal(ConnectionState.Failed, coordinator.State); Assert.Equal(ProxySettings.Empty, proxy.Current); Assert.Null(runtime.State); Assert.Null(coordinator.ActiveNode);
     }
+
+    [Fact]
+    public async Task DisconnectAttemptsXrayWhenProxyRestoreThrows()
+    {
+        var xray = new FakeXray();
+        var proxy = new FakeProxyService { ThrowOnDisable = true };
+        var runtime = new FakeRuntimeStore();
+        using var coordinator = new ConnectionCoordinator(xray, proxy, runtime, new LogService());
+
+        await coordinator.ConnectAsync(CreateNode(), new AppSettings());
+        await Assert.ThrowsAsync<AggregateException>(() => coordinator.DisconnectAsync());
+
+        Assert.Equal(1, proxy.DisableCount);
+        Assert.Equal(1, xray.DisconnectCount);
+        Assert.Equal(ConnectionState.Failed, coordinator.State);
+        Assert.NotNull(runtime.State);
+        Assert.Null(coordinator.ActiveNode);
+    }
+
+    [Fact]
+    public async Task DisconnectAttemptsProxyRestoreWhenXrayShutdownThrows()
+    {
+        var xray = new FakeXray { ThrowOnDisconnect = true };
+        var proxy = new FakeProxyService();
+        var runtime = new FakeRuntimeStore();
+        using var coordinator = new ConnectionCoordinator(xray, proxy, runtime, new LogService());
+
+        await coordinator.ConnectAsync(CreateNode(), new AppSettings());
+        await Assert.ThrowsAsync<AggregateException>(() => coordinator.DisconnectAsync());
+
+        Assert.Equal(1, proxy.DisableCount);
+        Assert.Equal(1, xray.DisconnectCount);
+        Assert.Equal(ConnectionState.Failed, coordinator.State);
+        Assert.NotNull(runtime.State);
+        Assert.NotNull(coordinator.ActiveNode);
+    }
+
+    [Fact]
+    public async Task SuccessfulDisconnectClearsStateAndActiveNode()
+    {
+        var xray = new FakeXray();
+        var proxy = new FakeProxyService();
+        var runtime = new FakeRuntimeStore();
+        using var coordinator = new ConnectionCoordinator(xray, proxy, runtime, new LogService());
+
+        await coordinator.ConnectAsync(CreateNode(), new AppSettings());
+        await coordinator.DisconnectAsync();
+
+        Assert.Equal(ConnectionState.Disconnected, coordinator.State);
+        Assert.Null(coordinator.ActiveNode);
+        Assert.Null(runtime.State);
+    }
+
+    [Fact]
+    public async Task PartiallyFailedDisconnectKeepsRecoveryInformationAndAttemptsBothActions()
+    {
+        var xray = new FakeXray { ThrowOnDisconnect = true };
+        var proxy = new FakeProxyService { ThrowOnDisable = true };
+        var runtime = new FakeRuntimeStore();
+        using var coordinator = new ConnectionCoordinator(xray, proxy, runtime, new LogService());
+
+        await coordinator.ConnectAsync(CreateNode(), new AppSettings());
+        var error = await Assert.ThrowsAsync<AggregateException>(() => coordinator.DisconnectAsync());
+
+        Assert.Equal(ConnectionState.Failed, coordinator.State);
+        Assert.Equal(1, proxy.DisableCount);
+        Assert.Equal(1, xray.DisconnectCount);
+        Assert.NotNull(runtime.State);
+        Assert.Equal(2, error.InnerExceptions.Count);
+    }
+
+    private static ProxyNode CreateNode() => new()
+    {
+        Protocol = "vless",
+        Host = "example.com",
+        Port = 443,
+        UserId = "11111111-1111-1111-1111-111111111111"
+    };
 }

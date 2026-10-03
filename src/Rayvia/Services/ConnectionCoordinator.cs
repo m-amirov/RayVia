@@ -54,13 +54,21 @@ public sealed class ConnectionCoordinator : IDisposable
                 SetState(ConnectionState.Connected);
                 return true;
             }
-            catch
+            catch (Exception connectionException)
             {
-                _activeNode = null;
                 SetState(ConnectionState.Failed);
-                await CleanupUnsafeAsync();
-                _runtime.Delete();
-                throw;
+                var cleanup = await CleanupAsync(cancellationToken);
+                if (cleanup.XrayStopped)
+                    _activeNode = null;
+                if (cleanup.Succeeded)
+                {
+                    _runtime.Delete();
+                    throw;
+                }
+
+                throw new AggregateException(
+                    "Подключение и последующая очистка завершились с ошибкой.",
+                    new[] { connectionException }.Concat(cleanup.Errors));
             }
         }
         finally { _operationGate.Release(); }
@@ -73,19 +81,18 @@ public sealed class ConnectionCoordinator : IDisposable
         {
             if (_state == ConnectionState.Disconnected) return;
             SetState(ConnectionState.Stopping);
-            try
-            {
-                _proxy.Disable();
-                await _xray.DisconnectAsync(cancellationToken);
-                _runtime.Delete();
+            var cleanup = await CleanupAsync(cancellationToken);
+            if (cleanup.XrayStopped)
                 _activeNode = null;
-                SetState(ConnectionState.Disconnected);
-            }
-            catch
+            if (cleanup.Succeeded)
             {
-                SetState(ConnectionState.Failed);
-                throw;
+                _runtime.Delete();
+                SetState(ConnectionState.Disconnected);
+                return;
             }
+
+            SetState(ConnectionState.Failed);
+            throw cleanup.ToException();
         }
         finally { _operationGate.Release(); }
     }
@@ -104,19 +111,47 @@ public sealed class ConnectionCoordinator : IDisposable
         try
         {
             if (_state is ConnectionState.Stopping or ConnectionState.Disconnected) return;
-            _activeNode = null;
             SetState(ConnectionState.Failed);
-            try { _proxy.Disable(); } catch (Exception ex) { _log.Write("Не удалось отключить System Proxy после падения Xray: " + ex.Message); }
-            _runtime.Delete();
+            var cleanup = await CleanupAsync(CancellationToken.None, stopXray: false);
+            _activeNode = null;
+            if (cleanup.Succeeded)
+                _runtime.Delete();
             _log.Write($"Xray PID {e.ProcessId} завершился неожиданно; соединение переведено в Failed.");
         }
         finally { _operationGate.Release(); }
     }
 
-    private async Task CleanupUnsafeAsync()
+    private async Task<CleanupResult> CleanupAsync(CancellationToken cancellationToken, bool stopXray = true)
     {
-        try { _proxy.Disable(); } catch (Exception ex) { _log.Write("Ошибка cleanup System Proxy: " + ex.Message); }
-        try { await _xray.DisconnectAsync(); } catch (Exception ex) { _log.Write("Ошибка cleanup Xray: " + ex.Message); }
+        var errors = new List<Exception>();
+        var xrayStopped = !stopXray;
+
+        try
+        {
+            if (!_proxy.Disable())
+                throw new InvalidOperationException("System Proxy restore did not confirm ownership.");
+        }
+        catch (Exception ex)
+        {
+            errors.Add(ex);
+            _log.Write("Ошибка cleanup System Proxy: " + ex.Message);
+        }
+
+        if (stopXray)
+        {
+            try
+            {
+                await _xray.DisconnectAsync(cancellationToken);
+                xrayStopped = true;
+            }
+            catch (Exception ex)
+            {
+                errors.Add(ex);
+                _log.Write("Ошибка cleanup Xray: " + ex.Message);
+            }
+        }
+
+        return new CleanupResult(xrayStopped, errors);
     }
 
     private void SaveRuntime(AppSettings settings, bool ownsProxy)
@@ -135,5 +170,12 @@ public sealed class ConnectionCoordinator : IDisposable
         _xray.Exited -= XrayOnExited;
         try { DisconnectAsync().GetAwaiter().GetResult(); } catch { }
         _operationGate.Dispose();
+    }
+
+    private sealed record CleanupResult(bool XrayStopped, IReadOnlyList<Exception> Errors)
+    {
+        public bool Succeeded => Errors.Count == 0;
+        public Exception ToException()
+            => new AggregateException("Очистка connection lifecycle завершилась с ошибкой.", Errors);
     }
 }

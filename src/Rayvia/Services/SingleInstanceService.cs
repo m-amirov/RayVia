@@ -56,28 +56,156 @@ public sealed class InstanceCommandEventArgs(InstanceCommand command) : EventArg
 public sealed class SingleInstanceService : IDisposable
 {
     public const string MutexName = "Local\\Rayvia.SingleInstance.v1";
+    public const string ArbitrationMutexName = "Local\\Rayvia.SingleInstance.Arbitration.v1";
     public const string PipeName = "Rayvia.SingleInstance.v1";
     private const string HandoffEventPrefix = "Local\\Rayvia.ElevationHandoff.";
+    private const string HandoffReadyEventPrefix = "Local\\Rayvia.ElevationHandoffReady.";
 
+    private Mutex? _arbitrationMutex;
     private Mutex? _mutex;
     private CancellationTokenSource? _listenerCancellation;
     private Task? _listener;
+    private ElevationHandoff? _handoff;
+    private EventWaitHandle? _handoffSignal;
+    private EventWaitHandle? _handoffReadySignal;
 
     public event EventHandler<InstanceCommandEventArgs>? CommandReceived;
+    public bool OwnsInstance => _mutex is not null;
 
     public bool TryAcquire()
     {
-        _mutex = new Mutex(initiallyOwned: true, MutexName, out var createdNew);
-        if (!createdNew)
+        if (!TryAcquireArbitrationMutex())
+            return false;
+
+        var mutex = new Mutex(initiallyOwned: false, MutexName, out var createdNew);
+        if (!createdNew || !TryTakeMutex(mutex, TimeSpan.Zero))
         {
-            _mutex.Dispose();
-            _mutex = null;
+            mutex.Dispose();
+            ReleaseArbitrationMutex();
             return false;
         }
 
+        _mutex = mutex;
+        StartCommandListener();
+        return true;
+    }
+
+    public bool BeginElevationHandoff(ElevationHandoff handoff)
+    {
+        if (!OwnsInstance || _handoff is not null)
+            return false;
+
+        try
+        {
+            _handoff = handoff;
+            _handoffSignal = CreateHandoffSignal(handoff);
+            _handoffReadySignal = CreateHandoffReadySignal(handoff);
+            return true;
+        }
+        catch
+        {
+            ClearHandoffSignals();
+            _handoff = null;
+            return false;
+        }
+    }
+
+    public bool SignalElevationHandoff()
+    {
+        if (_handoff is null || _handoffSignal is null || _mutex is null)
+            return false;
+
+        _handoffSignal.Set();
+        ReleaseMainMutex();
+        return true;
+    }
+
+    public bool WaitForElevationTakeover(TimeSpan timeout)
+        => _handoffReadySignal?.WaitOne(timeout) == true;
+
+    public async Task<bool> TryAcquireForHandoffAsync(
+        ElevationHandoff handoff,
+        TimeSpan timeout,
+        CancellationToken cancellationToken = default)
+    {
+        if (timeout <= TimeSpan.Zero)
+            return false;
+
+        var deadline = DateTime.UtcNow + timeout;
+        try
+        {
+            using var signal = EventWaitHandle.OpenExisting(GetHandoffEventName(handoff.Token));
+            var remaining = Remaining(deadline);
+            if (remaining <= TimeSpan.Zero || !await WaitOneAsync(signal, remaining, cancellationToken))
+                return false;
+
+            var mutex = new Mutex(initiallyOwned: false, MutexName, out _);
+            var acquired = await WaitOneAsync(mutex, Remaining(deadline), cancellationToken);
+            if (!acquired)
+            {
+                mutex.Dispose();
+                return false;
+            }
+
+            try
+            {
+                using var ready = EventWaitHandle.OpenExisting(GetHandoffReadyEventName(handoff.Token));
+                _mutex = mutex;
+                ready.Set();
+                return true;
+            }
+            catch
+            {
+                try { mutex.ReleaseMutex(); } catch { }
+                mutex.Dispose();
+                return false;
+            }
+        }
+        catch (WaitHandleCannotBeOpenedException)
+        {
+            return false;
+        }
+    }
+
+    public bool AbortElevationHandoff()
+    {
+        if (_handoff is null)
+            return false;
+
+        if (_mutex is null)
+        {
+            var mutex = new Mutex(initiallyOwned: false, MutexName, out _);
+            if (!TryTakeMutex(mutex, TimeSpan.Zero))
+            {
+                mutex.Dispose();
+                return false;
+            }
+            _mutex = mutex;
+        }
+
+        ClearHandoffSignals();
+        _handoff = null;
+        return true;
+    }
+
+    public void CompleteElevationHandoff()
+    {
+        if (_handoff is null)
+            return;
+
+        ClearHandoffSignals();
+        _handoff = null;
+        StopCommandListener();
+        ReleaseArbitrationMutex();
+    }
+
+    public void StartCommandListener()
+    {
+        if (_mutex is null || _listener is not null)
+            return;
+
         _listenerCancellation = new CancellationTokenSource();
         _listener = ListenAsync(_listenerCancellation.Token);
-        return true;
     }
 
     public static async Task<bool> SendCommandAsync(InstanceCommand command, TimeSpan timeout, CancellationToken cancellationToken = default)
@@ -98,6 +226,9 @@ public sealed class SingleInstanceService : IDisposable
     public static EventWaitHandle CreateHandoffSignal(ElevationHandoff handoff)
         => new(false, EventResetMode.ManualReset, GetHandoffEventName(handoff.Token), out _);
 
+    public static EventWaitHandle CreateHandoffReadySignal(ElevationHandoff handoff)
+        => new(false, EventResetMode.ManualReset, GetHandoffReadyEventName(handoff.Token), out _);
+
     public static async Task<bool> WaitForParentExitAsync(
         ElevationHandoff handoff,
         TimeSpan timeout,
@@ -107,28 +238,6 @@ public sealed class SingleInstanceService : IDisposable
             return false;
 
         var deadline = DateTime.UtcNow + timeout;
-        var signaled = false;
-        while (DateTime.UtcNow < deadline && !cancellationToken.IsCancellationRequested)
-        {
-            try
-            {
-                using var signal = EventWaitHandle.OpenExisting(GetHandoffEventName(handoff.Token));
-                var remaining = deadline - DateTime.UtcNow;
-                signaled = await Task.Run(() => signal.WaitOne(remaining), cancellationToken);
-                break;
-            }
-            catch (WaitHandleCannotBeOpenedException)
-            {
-                var remaining = deadline - DateTime.UtcNow;
-                if (remaining <= TimeSpan.Zero)
-                    break;
-                await Task.Delay(TimeSpan.FromMilliseconds(Math.Min(100, remaining.TotalMilliseconds)), cancellationToken);
-            }
-        }
-
-        if (!signaled || cancellationToken.IsCancellationRequested)
-            return false;
-
         while (DateTime.UtcNow < deadline && !cancellationToken.IsCancellationRequested)
         {
             try
@@ -137,7 +246,7 @@ public sealed class SingleInstanceService : IDisposable
                 if (parent.HasExited)
                     return true;
 
-                var remaining = deadline - DateTime.UtcNow;
+                var remaining = Remaining(deadline);
                 await parent.WaitForExitAsync(cancellationToken).WaitAsync(remaining, cancellationToken);
                 return true;
             }
@@ -155,6 +264,57 @@ public sealed class SingleInstanceService : IDisposable
     }
 
     private static string GetHandoffEventName(string token) => HandoffEventPrefix + token;
+    private static string GetHandoffReadyEventName(string token) => HandoffReadyEventPrefix + token;
+    private static TimeSpan Remaining(DateTime deadline) => deadline - DateTime.UtcNow;
+
+    private static async Task<bool> WaitOneAsync(WaitHandle handle, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        if (timeout <= TimeSpan.Zero)
+            return false;
+
+        return await Task.Run(() => handle.WaitOne(timeout), cancellationToken).WaitAsync(timeout, cancellationToken);
+    }
+
+    private static bool TryTakeMutex(Mutex mutex, TimeSpan timeout)
+    {
+        try { return mutex.WaitOne(timeout); }
+        catch (AbandonedMutexException) { return true; }
+    }
+
+    private bool TryAcquireArbitrationMutex()
+    {
+        var mutex = new Mutex(initiallyOwned: false, ArbitrationMutexName, out var createdNew);
+        if (!createdNew || !TryTakeMutex(mutex, TimeSpan.Zero))
+        {
+            mutex.Dispose();
+            return false;
+        }
+
+        _arbitrationMutex = mutex;
+        return true;
+    }
+
+    private void ReleaseMainMutex()
+    {
+        try { _mutex?.ReleaseMutex(); } catch { }
+        _mutex?.Dispose();
+        _mutex = null;
+    }
+
+    private void ReleaseArbitrationMutex()
+    {
+        try { _arbitrationMutex?.ReleaseMutex(); } catch { }
+        _arbitrationMutex?.Dispose();
+        _arbitrationMutex = null;
+    }
+
+    private void ClearHandoffSignals()
+    {
+        _handoffSignal?.Dispose();
+        _handoffSignal = null;
+        _handoffReadySignal?.Dispose();
+        _handoffReadySignal = null;
+    }
 
     private async Task ListenAsync(CancellationToken cancellationToken)
     {
@@ -175,11 +335,19 @@ public sealed class SingleInstanceService : IDisposable
 
     public void Dispose()
     {
+        StopCommandListener();
+        ReleaseMainMutex();
+        ClearHandoffSignals();
+        _handoff = null;
+        ReleaseArbitrationMutex();
+    }
+
+    private void StopCommandListener()
+    {
         _listenerCancellation?.Cancel();
         try { _listener?.Wait(TimeSpan.FromSeconds(1)); } catch { }
         _listenerCancellation?.Dispose();
-        try { _mutex?.ReleaseMutex(); } catch { }
-        _mutex?.Dispose();
-        _mutex = null;
+        _listenerCancellation = null;
+        _listener = null;
     }
 }

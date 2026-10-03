@@ -36,6 +36,44 @@ public sealed class ReliabilitySecurityTests
     }
 
     [Fact]
+    public async Task ElevationHandoffReservesOwnershipBeforeParentExitAndBlocksThirdInstance()
+    {
+        using var parent = new SingleInstanceService();
+        using var child = new SingleInstanceService();
+        using var third = new SingleInstanceService();
+        var handoff = ElevationHandoff.Create(Environment.ProcessId);
+
+        Assert.True(parent.TryAcquire());
+        Assert.True(parent.BeginElevationHandoff(handoff));
+
+        var takeover = child.TryAcquireForHandoffAsync(handoff, TimeSpan.FromSeconds(1));
+        Assert.False(third.TryAcquire());
+        Assert.True(parent.SignalElevationHandoff());
+        Assert.True(await takeover);
+        Assert.True(parent.WaitForElevationTakeover(TimeSpan.FromSeconds(1)));
+        Assert.True(child.OwnsInstance);
+        Assert.False(third.TryAcquire());
+
+        Assert.False(await SingleInstanceService.WaitForParentExitAsync(handoff, TimeSpan.FromMilliseconds(50)));
+        parent.CompleteElevationHandoff();
+        Assert.False(third.TryAcquire());
+    }
+
+    [Fact]
+    public void AbortedElevationHandoffLeavesParentOwner()
+    {
+        using var parent = new SingleInstanceService();
+        using var third = new SingleInstanceService();
+        var handoff = ElevationHandoff.Create(Environment.ProcessId);
+
+        Assert.True(parent.TryAcquire());
+        Assert.True(parent.BeginElevationHandoff(handoff));
+        Assert.True(parent.AbortElevationHandoff());
+        Assert.True(parent.OwnsInstance);
+        Assert.False(third.TryAcquire());
+    }
+
+    [Fact]
     public void RuntimeStateRoundTripsWithoutUserFiles()
     {
         using var temp = new TemporaryDirectory();
