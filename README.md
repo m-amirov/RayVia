@@ -4,11 +4,19 @@ Rayvia — универсальный Windows-клиент для Xray.
 
 ## Скачать
 
-**[Скачать Rayvia 0.3.1 — установщик Windows x64](https://github.com/m-amirov/Rayvia/releases/download/v0.3.1/Rayvia-Setup-x64.exe)**
+**[Скачать Rayvia 0.4.0 — установщик Windows x64](https://github.com/m-amirov/RayVia/releases/download/v0.4.0/Rayvia-Setup-x64.exe)**
 
-Страница релиза: [v0.3.1](https://github.com/m-amirov/Rayvia/releases/tag/v0.3.1)
+Страница релиза: [v0.4.0](https://github.com/m-amirov/RayVia/releases/tag/v0.4.0)
 
 Установщик self-contained: отдельно устанавливать .NET не требуется.
+
+## Изменения в 0.4.0
+
+- усилен детерминированный handoff single-instance ownership для TUN и повышенного запуска;
+- добавлены crash recovery, runtime state и безопасное восстановление System Proxy;
+- добавлены проверка целостности Xray core, fail-closed updater и атомарное сохранение настроек;
+- улучшены lifecycle connection state, cleanup Xray/System Proxy и снимок активного сервера;
+- добавлены канонические идентификаторы серверов, миграция legacy-узлов и CI-проверки сборки.
 
 ## Исправление 0.3.1
 
@@ -79,7 +87,8 @@ Rayvia использует встроенный TUN-inbound Xray и Wintun.
 
 ## Xray core
 
-При первом подключении Rayvia загружает `Xray-windows-64.zip` из последнего официального релиза XTLS/Xray-core.
+При первом подключении Rayvia загружает закреплённый релиз Xray (`v26.3.27`) из официального репозитория XTLS/Xray-core.
+Перед распаковкой скачивается официальный asset `Xray-windows-64.zip.dgst`; SHA2-256 обязателен и проверяется до staging/install. При отсутствии или повреждении digest установка завершается fail-closed.
 
 Файлы хранятся в:
 
@@ -121,3 +130,9 @@ dotnet publish src/Rayvia/Rayvia.csproj -c Release -r win-x64 --self-contained t
 `%APPDATA%\Rayvia\settings.json`
 
 URL подписки может содержать секрет. Не публикуйте `settings.json`.
+
+Runtime recovery:
+
+`%LOCALAPPDATA%\Rayvia\runtime-state.json`
+
+На старте Rayvia проверяет stale runtime state и orphan `xray.exe`, принадлежащий только каталогу Rayvia, восстанавливает System Proxy по полному ownership state и удаляет runtime marker идемпотентно.

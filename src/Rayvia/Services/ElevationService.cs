@@ -12,17 +12,17 @@ public static class ElevationService
         return principal.IsInRole(WindowsBuiltInRole.Administrator);
     }
 
-    public static void RestartElevated(bool autoConnect)
+    public static Process RestartElevated(bool autoConnect, ElevationHandoff handoff)
     {
         var executable = Environment.ProcessPath
                          ?? throw new InvalidOperationException("Не удалось определить путь Rayvia.");
 
-        Process.Start(new ProcessStartInfo
+        return Process.Start(new ProcessStartInfo
         {
             FileName = executable,
-            Arguments = autoConnect ? "--autoconnect" : "",
+            Arguments = string.Join(" ", handoff.ToArguments(autoConnect)),
             Verb = "runas",
             UseShellExecute = true
-        });
+        }) ?? throw new InvalidOperationException("Не удалось запустить повышенный Rayvia.");
     }
 }

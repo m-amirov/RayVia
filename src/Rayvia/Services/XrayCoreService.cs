@@ -1,715 +1,271 @@
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
-using System.Net;
 using System.Net.Http;
+using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 using System.Text.Json;
 using Rayvia.Models;
 
 namespace Rayvia.Services;
 
-public sealed class XrayCoreService : IDisposable
+public sealed class XrayExitedEventArgs(int processId, bool expected) : EventArgs
 {
-    private const string LatestXrayApi = "https://api.github.com/repos/XTLS/Xray-core/releases/latest";
-    private const string XrayAssetName = "Xray-windows-64.zip";
+    public int ProcessId { get; } = processId;
+    public bool Expected { get; } = expected;
+}
 
-    private readonly HttpClient _http = new();
+public sealed record ActiveCore(string Version, string Path, Dictionary<string, string>? Hashes);
+
+public interface IXrayCoreService : IDisposable
+{
+    event EventHandler<XrayExitedEventArgs>? Exited;
+    bool IsRunning { get; }
+    int? ProcessId { get; }
+    string? ExecutablePath { get; }
+    string AccessLogPath { get; }
+    Task ConnectAsync(ProxyNode node, AppSettings settings, CancellationToken cancellationToken = default);
+    Task DisconnectAsync(CancellationToken cancellationToken = default);
+}
+
+public sealed class XrayCoreService : IXrayCoreService
+{
+    private readonly HttpClient _http;
     private readonly LogService _log;
     private Process? _process;
+    private bool _expectedStop;
+    private readonly string _coreDirectory;
+    private readonly string _logDirectory;
 
-    private readonly string _coreDirectory = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Rayvia",
-        "Core");
-
-    private readonly string _logDirectory = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Rayvia",
-        "Logs");
-
+    public event EventHandler<XrayExitedEventArgs>? Exited;
     public bool IsRunning => _process is { HasExited: false };
+    public int? ProcessId => _process?.HasExited == false ? _process.Id : null;
+    public string? ExecutablePath => _process?.StartInfo.FileName;
     public string AccessLogPath => Path.Combine(_logDirectory, "access.log");
     public string ErrorLogPath => Path.Combine(_logDirectory, "xray-error.log");
+    public string CoreDirectory => _coreDirectory;
 
-    public XrayCoreService(LogService log)
+    public XrayCoreService(LogService log, HttpClient? http = null, string? dataDirectory = null)
     {
         _log = log;
-        _http.DefaultRequestHeaders.UserAgent.ParseAdd("Rayvia/0.3");
+        _http = http ?? new HttpClient();
+        _http.DefaultRequestHeaders.UserAgent.ParseAdd("Rayvia/0.4");
         _http.Timeout = TimeSpan.FromSeconds(60);
+        var root = dataDirectory ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Rayvia");
+        _coreDirectory = Path.Combine(root, "Core");
+        _logDirectory = Path.Combine(root, "Logs");
     }
 
-    public async Task ConnectAsync(ProxyNode node, AppSettings settings)
+    public async Task ConnectAsync(ProxyNode node, AppSettings settings, CancellationToken cancellationToken = default)
     {
-        await EnsureCoreAsync(settings.ConnectionMode == ConnectionMode.Tun);
-
-        Disconnect();
-
-        Directory.CreateDirectory(_coreDirectory);
+        var executable = await EnsureCoreAsync(settings.ConnectionMode == ConnectionMode.Tun, cancellationToken);
+        await DisconnectAsync(cancellationToken);
         Directory.CreateDirectory(_logDirectory);
-
-        TryDelete(AccessLogPath);
-        TryDelete(ErrorLogPath);
-
+        TryDelete(AccessLogPath); TryDelete(ErrorLogPath);
         var configPath = Path.Combine(_coreDirectory, "rayvia-config.json");
-        var executable = Path.Combine(_coreDirectory, "xray.exe");
-
         var includeCommunityRuList = settings.RoutingMode == RoutingMode.Smart;
         var includeRuGeoIp = settings.RoutingMode == RoutingMode.Smart;
 
-        ConfigValidationResult validation;
-
         for (var attempt = 0; attempt < 3; attempt++)
         {
-            var config = BuildConfig(
-                node,
-                settings,
-                AccessLogPath,
-                ErrorLogPath,
-                includeCommunityRuList,
-                includeRuGeoIp);
-
-            await File.WriteAllTextAsync(configPath, config);
-            validation = await ValidateConfigAsync(executable, configPath);
-
-            if (validation.Success)
-                goto ConfigValidated;
-
-            if (includeCommunityRuList && IsGeositeLoadError(validation.Detail))
-            {
-                includeCommunityRuList = false;
-                _log.Write("Smart Routing: geosite:category-ru недоступен, используется встроенный доменный fallback.");
-                continue;
-            }
-
-            if (includeRuGeoIp && IsGeoIpLoadError(validation.Detail))
-            {
-                includeRuGeoIp = false;
-                _log.Write("Smart Routing: geoip:ru недоступен, маршрут продолжит работать по доменным правилам.");
-                continue;
-            }
-
+            var config = XrayConfigBuilder.Build(node, settings, AccessLogPath, ErrorLogPath, includeCommunityRuList, includeRuGeoIp);
+            await File.WriteAllTextAsync(configPath, config, cancellationToken);
+            var validation = await ValidateConfigAsync(executable, configPath, cancellationToken);
+            if (validation.Success) break;
+            if (includeCommunityRuList && IsGeositeLoadError(validation.Detail)) { includeCommunityRuList = false; _log.Write("Smart Routing: geosite fallback."); continue; }
+            if (includeRuGeoIp && IsGeoIpLoadError(validation.Detail)) { includeRuGeoIp = false; _log.Write("Smart Routing: geoip fallback."); continue; }
             _log.Write("Xray config validation: " + validation.Detail);
-            throw new InvalidOperationException(
-                "Xray не принял конфигурацию. Подробности записаны в «Активность → Журнал».");
+            throw new InvalidOperationException("Xray не принял конфигурацию. Подробности записаны в журнале.");
         }
 
-        throw new InvalidOperationException(
-            "Не удалось подготовить маршрутизацию Xray. Подробности записаны в «Активность → Журнал».");
-
-ConfigValidated:
-
+        _expectedStop = false;
         _process = new Process
         {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = executable,
-                Arguments = $"run -c \"{configPath}\"",
-                WorkingDirectory = _coreDirectory,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            },
+            StartInfo = new ProcessStartInfo { FileName = executable, Arguments = $"run -c \"{configPath}\"", WorkingDirectory = Path.GetDirectoryName(executable)!, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true },
             EnableRaisingEvents = true
         };
-
-        _process.OutputDataReceived += (_, e) =>
-        {
-            if (!string.IsNullOrWhiteSpace(e.Data))
-                _log.Write("Xray: " + e.Data);
-        };
-
-        _process.ErrorDataReceived += (_, e) =>
-        {
-            if (!string.IsNullOrWhiteSpace(e.Data))
-                _log.Write("Xray: " + e.Data);
-        };
-
-        _process.Exited += (_, _) => _log.Write("Xray остановлен.");
-
-        if (!_process.Start())
-            throw new InvalidOperationException("Не удалось запустить Xray.");
-
-        _process.BeginOutputReadLine();
-        _process.BeginErrorReadLine();
-
-        await Task.Delay(settings.ConnectionMode == ConnectionMode.Tun ? 1200 : 500);
-
-        if (_process.HasExited)
-        {
-            var error = ReadLastError();
-            if (!string.IsNullOrWhiteSpace(error))
-                _log.Write("Xray startup error: " + error);
-
-            throw new InvalidOperationException(
-                "Xray завершился при запуске. Подробности записаны в «Активность → Журнал».");
-        }
-
-        _log.Write(
-            $"Подключение: {node.Name} · {node.Protocol.ToUpperInvariant()} · " +
-            $"{(settings.ConnectionMode == ConnectionMode.Tun ? "TUN" : "System Proxy")}.");
+        _process.OutputDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) _log.Write("Xray: " + e.Data); };
+        _process.ErrorDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) _log.Write("Xray: " + e.Data); };
+        _process.Exited += ProcessOnExited;
+        if (!_process.Start()) throw new InvalidOperationException("Не удалось запустить Xray.");
+        _process.BeginOutputReadLine(); _process.BeginErrorReadLine();
+        await Task.Delay(settings.ConnectionMode == ConnectionMode.Tun ? 1200 : 500, cancellationToken);
+        if (_process.HasExited) throw new InvalidOperationException("Xray завершился при запуске. Подробности записаны в журнале.");
+        _log.Write($"Подключение: {node.Name} · {node.Protocol.ToUpperInvariant()} · {(settings.ConnectionMode == ConnectionMode.Tun ? "TUN" : "System Proxy")}.");
     }
 
-    public void Disconnect()
+    private void ProcessOnExited(object? sender, EventArgs e)
     {
-        if (_process is null)
-            return;
+        if (sender is not Process process) return;
+        var expected = _expectedStop;
+        _log.Write(expected ? "Xray остановлен." : "Xray неожиданно завершился.");
+        Exited?.Invoke(this, new XrayExitedEventArgs(process.Id, expected));
+    }
 
+    public async Task DisconnectAsync(CancellationToken cancellationToken = default)
+    {
+        var process = _process;
+        if (process is null) return;
+        _expectedStop = true;
         try
         {
-            if (!_process.HasExited)
+            if (!process.HasExited)
             {
-                _process.Kill(true);
-                _process.WaitForExit(3000);
+                try { process.CloseMainWindow(); } catch { }
+                try { await process.WaitForExitAsync(new CancellationTokenSource(TimeSpan.FromSeconds(3)).Token); }
+                catch (OperationCanceledException) { if (!process.HasExited) process.Kill(entireProcessTree: true); }
             }
         }
-        catch
-        {
-            // Best-effort shutdown. Wintun and routes are released with the process.
-        }
-        finally
-        {
-            _process.Dispose();
-            _process = null;
-        }
+        catch (Exception ex) { _log.Write("Ошибка остановки Xray: " + ex.Message); }
+        finally { process.Dispose(); if (ReferenceEquals(_process, process)) _process = null; }
     }
 
-    private async Task EnsureCoreAsync(bool requireWintun)
+    private async Task<string> EnsureCoreAsync(bool requireWintun, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(_coreDirectory);
-
-        var executable = Path.Combine(_coreDirectory, "xray.exe");
-        var wintun = Path.Combine(_coreDirectory, "wintun.dll");
-
-        if (File.Exists(executable) && (!requireWintun || File.Exists(wintun)))
-            return;
-
-        _log.Write("Скачивание Xray core…");
-
-        using var releaseResponse = await _http.GetAsync(LatestXrayApi);
-        releaseResponse.EnsureSuccessStatusCode();
-
-        await using var releaseStream = await releaseResponse.Content.ReadAsStreamAsync();
-        using var doc = await JsonDocument.ParseAsync(releaseStream);
-
-        string? downloadUrl = null;
-        foreach (var asset in doc.RootElement.GetProperty("assets").EnumerateArray())
+        var stagingDirectory = Path.Combine(_coreDirectory, "staging");
+        if (Directory.Exists(stagingDirectory))
         {
-            if (!string.Equals(
-                    asset.GetProperty("name").GetString(),
-                    XrayAssetName,
-                    StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            downloadUrl = asset.GetProperty("browser_download_url").GetString();
-            break;
+            foreach (var stale in Directory.EnumerateDirectories(stagingDirectory))
+            {
+                try { Directory.Delete(stale, true); } catch { }
+            }
+        }
+        var activePath = Path.Combine(_coreDirectory, "active-core.json");
+        if (File.Exists(activePath))
+        {
+            try
+            {
+                var record = JsonSerializer.Deserialize<ActiveCore>(await File.ReadAllTextAsync(activePath, cancellationToken));
+                if (await IsActiveCoreValidAsync(record, XrayRelease.Version, _coreDirectory, requireWintun, cancellationToken))
+                    return Path.Combine(record!.Path, "xray.exe");
+            }
+            catch { }
         }
 
-        if (string.IsNullOrWhiteSpace(downloadUrl))
-            throw new InvalidOperationException("В релизе Xray не найден Xray-windows-64.zip.");
-
-        var zipPath = Path.Combine(Path.GetTempPath(), $"rayvia-xray-{Guid.NewGuid():N}.zip");
-        var extractDirectory = Path.Combine(Path.GetTempPath(), $"rayvia-xray-{Guid.NewGuid():N}");
-
+        _log.Write($"Скачивание Xray core {XrayRelease.Version}…");
+        using var release = await ReadReleaseAsync(cancellationToken);
+        var asset = FindAsset(release, XrayRelease.AssetName);
+        var digest = FindAsset(release, XrayRelease.DigestAssetName);
+        if (asset is null || digest is null) throw new InvalidOperationException("Xray release не содержит обязательный asset или официальный digest.");
+        var root = Path.Combine(_coreDirectory, "staging", Guid.NewGuid().ToString("N")); Directory.CreateDirectory(root);
+        var zipPart = Path.Combine(root, XrayRelease.AssetName + ".part"); var digestPart = Path.Combine(root, XrayRelease.DigestAssetName + ".part"); var extracted = Path.Combine(root, "extracted");
         try
         {
-            using (var download = await _http.GetAsync(
-                       downloadUrl,
-                       HttpCompletionOption.ResponseHeadersRead))
+            await DownloadToPartAsync(asset, zipPart, cancellationToken);
+            await DownloadToPartAsync(digest, digestPart, cancellationToken);
+            var expected = ParseSha256(await File.ReadAllTextAsync(digestPart, cancellationToken));
+            if (expected is null) throw new InvalidOperationException("Xray official digest не содержит SHA2-256.");
+            if (!await VerifySha256Async(zipPart, expected, cancellationToken)) throw new InvalidOperationException("SHA-256 Xray archive не совпал с официальным digest.");
+            ZipFile.ExtractToDirectory(zipPart, extracted);
+            var files = new[] { "xray.exe", "geoip.dat", "geosite.dat" }.ToDictionary(x => x, x => FindRequiredFile(extracted, x), StringComparer.OrdinalIgnoreCase);
+            var wintun = FindOptionalFile(extracted, "wintun.dll"); var license = FindOptionalFile(extracted, "LICENSE-Wintun");
+            if (requireWintun && wintun is null) throw new InvalidOperationException("Xray archive не содержит wintun.dll, необходимый для TUN.");
+            var versionPath = Path.Combine(_coreDirectory, "versions", XrayRelease.Version); var next = versionPath + ".new-" + Guid.NewGuid().ToString("N"); Directory.CreateDirectory(next);
+            var old = versionPath + ".old-" + Guid.NewGuid().ToString("N");
+            var movedOld = false;
+            try
             {
-                download.EnsureSuccessStatusCode();
+                foreach (var file in files) File.Copy(file.Value, Path.Combine(next, file.Key));
+                if (wintun is not null) File.Copy(wintun, Path.Combine(next, "wintun.dll")); if (license is not null) File.Copy(license, Path.Combine(next, "LICENSE-Wintun"));
+                if (Directory.Exists(versionPath)) { Directory.Move(versionPath, old); movedOld = true; }
+                Directory.Move(next, versionPath);
 
-                await using var input = await download.Content.ReadAsStreamAsync();
-                await using var output = File.Create(zipPath);
-                await input.CopyToAsync(output);
+                var hashes = await ComputeCriticalHashesAsync(versionPath, cancellationToken);
+                var metadata = new ActiveCore(XrayRelease.Version, versionPath, hashes);
+                var tempActive = activePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                try
+                {
+                    await using var marker = new FileStream(tempActive, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.WriteThrough | FileOptions.Asynchronous);
+                    await JsonSerializer.SerializeAsync(marker, metadata, cancellationToken: cancellationToken);
+                    await marker.FlushAsync(cancellationToken);
+                    marker.Flush(flushToDisk: true);
+                }
+                catch
+                {
+                    try { File.Delete(tempActive); } catch { }
+                    throw;
+                }
+                try
+                {
+                    if (File.Exists(activePath)) File.Replace(tempActive, activePath, null, true); else File.Move(tempActive, activePath);
+                }
+                finally { try { File.Delete(tempActive); } catch { } }
+
+                if (movedOld)
+                    try { Directory.Delete(old, true); } catch { }
             }
-
-            ZipFile.ExtractToDirectory(zipPath, extractDirectory, true);
-
-            foreach (var fileName in new[]
-                     {
-                         "xray.exe",
-                         "geoip.dat",
-                         "geosite.dat",
-                         "wintun.dll",
-                         "LICENSE-Wintun"
-                     })
+            catch
             {
-                var source = Directory
-                    .EnumerateFiles(extractDirectory, fileName, SearchOption.AllDirectories)
-                    .FirstOrDefault();
-
-                if (source is not null)
-                    File.Copy(source, Path.Combine(_coreDirectory, fileName), true);
+                try { if (Directory.Exists(versionPath)) Directory.Delete(versionPath, true); } catch { }
+                try { if (movedOld && Directory.Exists(old)) Directory.Move(old, versionPath); } catch { }
+                throw;
             }
-
-            if (!File.Exists(executable))
-                throw new InvalidOperationException("Архив Xray не содержит xray.exe.");
-
-            if (requireWintun && !File.Exists(wintun))
-                throw new InvalidOperationException("Архив Xray не содержит wintun.dll, необходимый для TUN.");
-
-            _log.Write("Xray core установлен.");
+            finally { try { if (Directory.Exists(next)) Directory.Delete(next, true); } catch { } }
+            return Path.Combine(versionPath, "xray.exe");
         }
-        finally
-        {
-            TryDelete(zipPath);
-            try { Directory.Delete(extractDirectory, true); } catch { }
-        }
+        finally { try { Directory.Delete(root, true); } catch { } }
     }
 
-    private static async Task<ConfigValidationResult> ValidateConfigAsync(
-        string executable,
-        string configPath)
+    private async Task<JsonDocument> ReadReleaseAsync(CancellationToken cancellationToken)
+    { using var response = await _http.GetAsync(XrayRelease.ReleaseApi, cancellationToken); response.EnsureSuccessStatusCode(); return JsonDocument.Parse(await response.Content.ReadAsStreamAsync(cancellationToken)); }
+    private static JsonElement? FindAsset(JsonDocument release, string name)
     {
-        using var process = new Process
+        foreach (var asset in release.RootElement.GetProperty("assets").EnumerateArray())
+            if (string.Equals(asset.GetProperty("name").GetString(), name, StringComparison.OrdinalIgnoreCase))
+                return asset;
+        return null;
+    }
+    private async Task DownloadToPartAsync(JsonElement? asset, string path, CancellationToken cancellationToken) { if (asset is null) throw new InvalidOperationException("Missing release asset."); using var response = await _http.GetAsync(asset.Value.GetProperty("browser_download_url").GetString(), HttpCompletionOption.ResponseHeadersRead, cancellationToken); response.EnsureSuccessStatusCode(); await using var input = await response.Content.ReadAsStreamAsync(cancellationToken); await using var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 64 * 1024, FileOptions.WriteThrough | FileOptions.Asynchronous); await input.CopyToAsync(output, cancellationToken); await output.FlushAsync(cancellationToken); output.Flush(true); }
+    private static string? ParseSha256(string content) { var match = Regex.Match(content, @"(?im)^SHA2-256\s*=\s*([0-9a-f]{64})\s*$"); return match.Success ? match.Groups[1].Value.ToLowerInvariant() : null; }
+    public static async Task<bool> VerifySha256Async(string path, string expected, CancellationToken cancellationToken = default) { if (expected.Length != 64 || !expected.All(Uri.IsHexDigit)) return false; await using var stream = File.OpenRead(path); var hash = await SHA256.HashDataAsync(stream, cancellationToken); return Convert.ToHexString(hash).Equals(expected, StringComparison.OrdinalIgnoreCase); }
+    public static async Task<bool> IsActiveCoreValidAsync(ActiveCore? record, string expectedVersion, string coreDirectory, bool requireWintun, CancellationToken cancellationToken = default)
+    {
+        if (record is null || record.Hashes is null || !string.Equals(record.Version, expectedVersion, StringComparison.Ordinal) || !IsPathUnderDirectory(record.Path, coreDirectory))
+            return false;
+
+        var required = new[] { "xray.exe", "geoip.dat", "geosite.dat" };
+        if (requireWintun)
+            required = [.. required, "wintun.dll"];
+
+        foreach (var file in required)
         {
-            StartInfo = new ProcessStartInfo
-            {
-                FileName = executable,
-                Arguments = $"run -test -c \"{configPath}\"",
-                WorkingDirectory = Path.GetDirectoryName(executable)!,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            }
-        };
+            var path = Path.Combine(record.Path, file);
+            if (!File.Exists(path) || !record.Hashes.TryGetValue(file, out var expectedHash) || !await VerifySha256Async(path, expectedHash, cancellationToken))
+                return false;
+        }
 
-        process.Start();
-
-        var stdoutTask = process.StandardOutput.ReadToEndAsync();
-        var stderrTask = process.StandardError.ReadToEndAsync();
-
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(12));
-
+        return true;
+    }
+    private static string FindRequiredFile(string root, string name) => FindOptionalFile(root, name) ?? throw new InvalidOperationException($"Архив Xray не содержит {name}.");
+    private static string? FindOptionalFile(string root, string name) => Directory.EnumerateFiles(root, name, SearchOption.AllDirectories).FirstOrDefault();
+    private static bool IsPathUnderDirectory(string path, string directory)
+    {
         try
         {
-            await process.WaitForExitAsync(timeout.Token);
+            var root = Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            var candidate = Path.GetFullPath(path);
+            return candidate.StartsWith(root, StringComparison.OrdinalIgnoreCase);
         }
-        catch (OperationCanceledException)
-        {
-            try { process.Kill(true); } catch { }
-            return new ConfigValidationResult(
-                false,
-                "Проверка конфигурации Xray не завершилась за отведённое время.");
-        }
-
-        var stdout = await stdoutTask;
-        var stderr = await stderrTask;
-        var detail = string.Join(
-            " ",
-            new[] { stderr, stdout }
-                .Where(x => !string.IsNullOrWhiteSpace(x))
-                .Select(x => x.Trim()));
-
-        return new ConfigValidationResult(process.ExitCode == 0, detail);
+        catch { return false; }
     }
-
-    private static bool IsGeositeLoadError(string detail)
-        => detail.Contains("geosite", StringComparison.OrdinalIgnoreCase)
-           && (detail.Contains("failed to load", StringComparison.OrdinalIgnoreCase)
-               || detail.Contains("code not found", StringComparison.OrdinalIgnoreCase)
-               || detail.Contains("category-ru", StringComparison.OrdinalIgnoreCase));
-
-    private static bool IsGeoIpLoadError(string detail)
-        => detail.Contains("geoip", StringComparison.OrdinalIgnoreCase)
-           && (detail.Contains("failed to load", StringComparison.OrdinalIgnoreCase)
-               || detail.Contains("code not found", StringComparison.OrdinalIgnoreCase)
-               || detail.Contains("geoip:ru", StringComparison.OrdinalIgnoreCase));
-
+    private static async Task<Dictionary<string, string>> ComputeCriticalHashesAsync(string root, CancellationToken cancellationToken)
+    {
+        var hashes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in new[] { "xray.exe", "geoip.dat", "geosite.dat", "wintun.dll" })
+        {
+            var path = Path.Combine(root, name);
+            if (!File.Exists(path))
+                continue;
+            await using var stream = File.OpenRead(path);
+            hashes[name] = Convert.ToHexString(await SHA256.HashDataAsync(stream, cancellationToken)).ToLowerInvariant();
+        }
+        return hashes;
+    }
+    private static bool IsGeositeLoadError(string detail) => detail.Contains("geosite", StringComparison.OrdinalIgnoreCase) && detail.Contains("failed", StringComparison.OrdinalIgnoreCase);
+    private static bool IsGeoIpLoadError(string detail) => detail.Contains("geoip", StringComparison.OrdinalIgnoreCase) && detail.Contains("failed", StringComparison.OrdinalIgnoreCase);
+    private static async Task<ConfigValidationResult> ValidateConfigAsync(string executable, string configPath, CancellationToken cancellationToken) { using var process = new Process { StartInfo = new ProcessStartInfo { FileName = executable, Arguments = $"run -test -c \"{configPath}\"", WorkingDirectory = Path.GetDirectoryName(executable)!, UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true } }; if (!process.Start()) return new(false, "Не удалось запустить xray -test."); var stdout = process.StandardOutput.ReadToEndAsync(cancellationToken); var stderr = process.StandardError.ReadToEndAsync(cancellationToken); try { await process.WaitForExitAsync(new CancellationTokenSource(TimeSpan.FromSeconds(12)).Token); } catch { try { process.Kill(true); } catch { } return new(false, "Проверка конфигурации Xray превысила timeout."); } var detail = string.Join(" ", new[] { await stderr, await stdout }.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim())); return new(process.ExitCode == 0, detail); }
     private sealed record ConfigValidationResult(bool Success, string Detail);
-
-    private string ReadLastError()
-    {
-        try
-        {
-            if (!File.Exists(ErrorLogPath))
-                return "";
-
-            return string.Join(
-                " ",
-                File.ReadLines(ErrorLogPath).TakeLast(3)).Trim();
-        }
-        catch
-        {
-            return "";
-        }
-    }
-
-    private static string BuildConfig(
-        ProxyNode node,
-        AppSettings settings,
-        string accessLogPath,
-        string errorLogPath,
-        bool includeCommunityRuList,
-        bool includeRuGeoIp)
-    {
-        var rules = new List<object>();
-
-        foreach (var rule in settings.Rules)
-        {
-            if (string.IsNullOrWhiteSpace(rule.Pattern))
-                continue;
-
-            var outbound = rule.Action.ToLowerInvariant() switch
-            {
-                "direct" => "direct",
-                "block" => "block",
-                _ => "proxy"
-            };
-
-            if (LooksLikeIpRule(rule.Pattern))
-            {
-                rules.Add(new Dictionary<string, object?>
-                {
-                    ["type"] = "field",
-                    ["ip"] = new[] { rule.Pattern },
-                    ["outboundTag"] = outbound
-                });
-            }
-            else
-            {
-                var domain = HasDomainPrefix(rule.Pattern)
-                    ? rule.Pattern
-                    : "domain:" + rule.Pattern;
-
-                rules.Add(new Dictionary<string, object?>
-                {
-                    ["type"] = "field",
-                    ["domain"] = new[] { domain },
-                    ["outboundTag"] = outbound
-                });
-            }
-        }
-
-        if (settings.RoutingMode == RoutingMode.Smart)
-        {
-            // Private networks never depend on external geodata.
-            rules.Add(new Dictionary<string, object?>
-            {
-                ["type"] = "field",
-                ["ip"] = new[]
-                {
-                    "10.0.0.0/8",
-                    "172.16.0.0/12",
-                    "192.168.0.0/16",
-                    "127.0.0.0/8",
-                    "169.254.0.0/16",
-                    "::1/128",
-                    "fc00::/7",
-                    "fe80::/10"
-                },
-                ["outboundTag"] = "direct"
-            });
-
-            if (includeRuGeoIp)
-            {
-                rules.Add(new Dictionary<string, object?>
-                {
-                    ["type"] = "field",
-                    ["ip"] = new[] { "geoip:ru" },
-                    ["outboundTag"] = "direct"
-                });
-            }
-
-            var russianDomains = new List<string>
-            {
-                "domain:ru",
-                "domain:su",
-                "domain:xn--p1ai"
-            };
-
-            if (includeCommunityRuList)
-                russianDomains.Add("geosite:category-ru");
-
-            rules.Add(new Dictionary<string, object?>
-            {
-                ["type"] = "field",
-                ["domain"] = russianDomains,
-                ["outboundTag"] = "direct"
-            });
-        }
-        else if (settings.RoutingMode == RoutingMode.DirectAll)
-        {
-            rules.Add(new Dictionary<string, object?>
-            {
-                ["type"] = "field",
-                ["network"] = "tcp,udp",
-                ["outboundTag"] = "direct"
-            });
-        }
-
-        var inbounds = new List<object>();
-
-        if (settings.ConnectionMode == ConnectionMode.Tun)
-        {
-            inbounds.Add(new Dictionary<string, object?>
-            {
-                ["tag"] = "tun-in",
-                ["protocol"] = "tun",
-                ["settings"] = new Dictionary<string, object?>
-                {
-                    ["name"] = "Rayvia",
-                    ["desc"] = "Rayvia",
-                    ["mtu"] = 1500,
-                    ["gateway"] = new[] { "10.66.0.1/30", "fd00:66::1/126" },
-                    ["dns"] = new[]
-                    {
-                        "1.1.1.1",
-                        "8.8.8.8",
-                        "2606:4700:4700::1111",
-                        "2001:4860:4860::8888"
-                    },
-                    ["autoSystemRoutingTable"] = new[] { "0.0.0.0/0", "::/0" },
-                    ["autoOutboundsInterface"] = "auto"
-                },
-                ["sniffing"] = new Dictionary<string, object?>
-                {
-                    ["enabled"] = true,
-                    ["destOverride"] = new[] { "http", "tls", "quic" },
-                    ["routeOnly"] = true
-                }
-            });
-        }
-
-        inbounds.Add(new Dictionary<string, object?>
-        {
-            ["tag"] = "socks-in",
-            ["listen"] = "127.0.0.1",
-            ["port"] = settings.SocksPort,
-            ["protocol"] = "socks",
-            ["settings"] = new Dictionary<string, object?> { ["udp"] = true }
-        });
-
-        inbounds.Add(new Dictionary<string, object?>
-        {
-            ["tag"] = "http-in",
-            ["listen"] = "127.0.0.1",
-            ["port"] = settings.HttpPort,
-            ["protocol"] = "http"
-        });
-
-        var config = new Dictionary<string, object?>
-        {
-            ["log"] = new Dictionary<string, object?>
-            {
-                ["loglevel"] = "warning",
-                ["access"] = accessLogPath,
-                ["error"] = errorLogPath
-            },
-            ["inbounds"] = inbounds,
-            ["outbounds"] = new object[]
-            {
-                BuildProxyOutbound(node),
-                new Dictionary<string, object?>
-                {
-                    ["tag"] = "direct",
-                    ["protocol"] = "freedom"
-                },
-                new Dictionary<string, object?>
-                {
-                    ["tag"] = "block",
-                    ["protocol"] = "blackhole"
-                }
-            },
-            ["routing"] = new Dictionary<string, object?>
-            {
-                ["domainStrategy"] = "IPIfNonMatch",
-                ["rules"] = rules
-            }
-        };
-
-        return JsonSerializer.Serialize(
-            config,
-            new JsonSerializerOptions
-            {
-                WriteIndented = true,
-                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
-            });
-    }
-
-    private static Dictionary<string, object?> BuildProxyOutbound(ProxyNode node)
-    {
-        var outbound = new Dictionary<string, object?>
-        {
-            ["tag"] = "proxy",
-            ["protocol"] = node.Protocol
-        };
-
-        switch (node.Protocol.ToLowerInvariant())
-        {
-            case "vless":
-            {
-                var user = new Dictionary<string, object?>
-                {
-                    ["id"] = node.UserId,
-                    ["encryption"] = "none"
-                };
-
-                if (!string.IsNullOrWhiteSpace(node.Flow))
-                    user["flow"] = node.Flow;
-
-                outbound["settings"] = new Dictionary<string, object?>
-                {
-                    ["vnext"] = new object[]
-                    {
-                        new Dictionary<string, object?>
-                        {
-                            ["address"] = node.Host,
-                            ["port"] = node.Port,
-                            ["users"] = new object[] { user }
-                        }
-                    }
-                };
-                outbound["streamSettings"] = BuildStreamSettings(node);
-                break;
-            }
-
-            case "vmess":
-                outbound["settings"] = new Dictionary<string, object?>
-                {
-                    ["vnext"] = new object[]
-                    {
-                        new Dictionary<string, object?>
-                        {
-                            ["address"] = node.Host,
-                            ["port"] = node.Port,
-                            ["users"] = new object[]
-                            {
-                                new Dictionary<string, object?>
-                                {
-                                    ["id"] = node.UserId,
-                                    ["alterId"] = node.AlterId,
-                                    ["security"] = "auto"
-                                }
-                            }
-                        }
-                    }
-                };
-                outbound["streamSettings"] = BuildStreamSettings(node);
-                break;
-
-            case "trojan":
-                outbound["settings"] = new Dictionary<string, object?>
-                {
-                    ["servers"] = new object[]
-                    {
-                        new Dictionary<string, object?>
-                        {
-                            ["address"] = node.Host,
-                            ["port"] = node.Port,
-                            ["password"] = node.Password
-                        }
-                    }
-                };
-                outbound["streamSettings"] = BuildStreamSettings(node);
-                break;
-
-            case "shadowsocks":
-                outbound["settings"] = new Dictionary<string, object?>
-                {
-                    ["servers"] = new object[]
-                    {
-                        new Dictionary<string, object?>
-                        {
-                            ["address"] = node.Host,
-                            ["port"] = node.Port,
-                            ["method"] = node.Cipher,
-                            ["password"] = node.Password
-                        }
-                    }
-                };
-                break;
-
-            default:
-                throw new NotSupportedException($"Протокол {node.Protocol} пока не поддерживается.");
-        }
-
-        return outbound;
-    }
-
-    private static Dictionary<string, object?> BuildStreamSettings(ProxyNode node)
-    {
-        var stream = new Dictionary<string, object?>
-        {
-            ["network"] = string.IsNullOrWhiteSpace(node.Network) ? "tcp" : node.Network,
-            ["security"] = string.IsNullOrWhiteSpace(node.Security) ? "none" : node.Security
-        };
-
-        if (string.Equals(node.Security, "reality", StringComparison.OrdinalIgnoreCase))
-        {
-            stream["realitySettings"] = new Dictionary<string, object?>
-            {
-                ["serverName"] = node.Sni,
-                ["fingerprint"] = node.Fingerprint ?? "chrome",
-                ["publicKey"] = node.PublicKey,
-                ["shortId"] = node.ShortId,
-                ["spiderX"] = "/"
-            };
-        }
-        else if (string.Equals(node.Security, "tls", StringComparison.OrdinalIgnoreCase))
-        {
-            var tls = new Dictionary<string, object?>
-            {
-                ["serverName"] = node.Sni ?? node.Host
-            };
-
-            if (!string.IsNullOrWhiteSpace(node.Fingerprint))
-                tls["fingerprint"] = node.Fingerprint;
-
-            stream["tlsSettings"] = tls;
-        }
-
-        if (string.Equals(node.Network, "ws", StringComparison.OrdinalIgnoreCase))
-        {
-            var ws = new Dictionary<string, object?> { ["path"] = node.Path ?? "/" };
-
-            if (!string.IsNullOrWhiteSpace(node.HostHeader))
-            {
-                ws["headers"] = new Dictionary<string, string>
-                {
-                    ["Host"] = node.HostHeader
-                };
-            }
-
-            stream["wsSettings"] = ws;
-        }
-        else if (string.Equals(node.Network, "grpc", StringComparison.OrdinalIgnoreCase))
-        {
-            stream["grpcSettings"] = new Dictionary<string, object?>
-            {
-                ["serviceName"] = node.ServiceName ?? ""
-            };
-        }
-
-        return stream;
-    }
-
-    private static bool HasDomainPrefix(string value)
-        => value.StartsWith("domain:", StringComparison.OrdinalIgnoreCase)
-           || value.StartsWith("full:", StringComparison.OrdinalIgnoreCase)
-           || value.StartsWith("regexp:", StringComparison.OrdinalIgnoreCase)
-           || value.StartsWith("geosite:", StringComparison.OrdinalIgnoreCase)
-           || value.StartsWith("ext:", StringComparison.OrdinalIgnoreCase);
-
-    private static bool LooksLikeIpRule(string value)
-    {
-        if (value.StartsWith("geoip:", StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        var candidate = value.Split('/', 2)[0];
-        return IPAddress.TryParse(candidate, out _);
-    }
-
-    private static void TryDelete(string path)
-    {
-        try { File.Delete(path); } catch { }
-    }
-
-    public void Dispose()
-    {
-        Disconnect();
-        _http.Dispose();
-    }
+    private static void TryDelete(string path) { try { File.Delete(path); } catch { } }
+    public void Dispose() { DisconnectAsync().GetAwaiter().GetResult(); _http.Dispose(); }
 }

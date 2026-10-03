@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Threading;
 using Rayvia.Models;
 using Rayvia.Services;
 
@@ -21,6 +22,7 @@ public partial class MainWindow : Window
     private readonly LatencyService _latency = new();
     private readonly RoutingInspectorService _inspector = new();
     private readonly LiveConnectionsService _liveConnections = new();
+    private readonly RuntimeStateService _runtimeState = new();
     private readonly ObservableCollection<ConnectionEntry> _connections = [];
 
     private readonly bool _autoConnectOnStartup;
@@ -28,6 +30,8 @@ public partial class MainWindow : Window
     private UpdateInfo? _pendingUpdate;
     private bool _loaded;
     private bool _refreshingUi;
+    private bool _closing;
+    private readonly ConnectionCoordinator _connectionCoordinator;
 
     public MainWindow(bool autoConnectOnStartup = false)
     {
@@ -35,6 +39,8 @@ public partial class MainWindow : Window
 
         _autoConnectOnStartup = autoConnectOnStartup;
         _xray = new XrayCoreService(_log);
+        _connectionCoordinator = new ConnectionCoordinator(_xray, _systemProxy, _runtimeState, _log);
+        _connectionCoordinator.StateChanged += (_, state) => Dispatcher.Invoke(() => UpdateConnectionUi(state));
 
         ConnectionsList.ItemsSource = _connections;
 
@@ -65,7 +71,28 @@ public partial class MainWindow : Window
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
-        _settings = await _settingsService.LoadAsync();
+        try
+        {
+            _settings = await _settingsService.LoadAsync();
+        }
+        catch (SettingsRecoveryRequiredException ex)
+        {
+            _log.Write("Настройки требуют восстановления: " + ex.Message);
+            var result = MessageBox.Show(
+                this,
+                ex.Message + "\n\nСоздать новые настройки?",
+                "Восстановление настроек",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Warning);
+            if (result != MessageBoxResult.Yes)
+            {
+                Application.Current.Shutdown(1);
+                return;
+            }
+
+            _settings = new AppSettings();
+            await _settingsService.SaveAsync(_settings);
+        }
         CleanGroupMembership();
         _loaded = true;
 
@@ -93,11 +120,17 @@ public partial class MainWindow : Window
         }
     }
 
-    private void MainWindow_Closing(object? sender, CancelEventArgs e)
+    private async void MainWindow_Closing(object? sender, CancelEventArgs e)
     {
-        try { _systemProxy.Disable(); } catch { }
+        if (_closing)
+            return;
+
+        e.Cancel = true;
+        _closing = true;
+        try { await _connectionCoordinator.DisconnectAsync(); } catch (Exception ex) { _log.Write("Ошибка shutdown: " + ex.Message); }
         _liveConnections.Dispose();
-        _xray.Dispose();
+        _connectionCoordinator.Dispose();
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.ApplicationIdle, new Action(Close));
     }
 
     private void CleanGroupMembership()
@@ -230,10 +263,10 @@ public partial class MainWindow : Window
 
     private async Task ConnectAsync(bool toggleDisconnect)
     {
-        if (_xray.IsRunning)
+        if (_connectionCoordinator.State is ConnectionState.Connected or ConnectionState.Connecting)
         {
             if (toggleDisconnect)
-                Disconnect();
+                await DisconnectAsync();
             return;
         }
 
@@ -256,8 +289,8 @@ public partial class MainWindow : Window
             {
                 await SaveAsync();
                 _log.Write("Для TUN запрашиваются права администратора.");
-                ElevationService.RestartElevated(true);
-                Application.Current.Shutdown();
+                if (Application.Current is not App app || !app.TryRestartElevatedAndShutdown(autoConnect: true))
+                    throw new InvalidOperationException("Не удалось передать запуск повышенному Rayvia.");
             }
             catch (Exception ex)
             {
@@ -310,22 +343,17 @@ public partial class MainWindow : Window
             await SaveAsync();
 
             ConnectButton.Content = "Подключение…";
-            await _xray.ConnectAsync(node, _settings);
-
-            if (_settings.ConnectionMode == ConnectionMode.SystemProxy)
-                _systemProxy.Enable(_settings.HttpPort);
-            else
-                _systemProxy.Disable();
+            if (!await _connectionCoordinator.ConnectAsync(node, _settings))
+                return;
 
             _liveConnections.Start(_xray.AccessLogPath);
-            UpdateConnectionUi(true);
+            UpdateConnectionUi(_connectionCoordinator.State);
         }
         catch (Exception ex)
         {
-            try { _systemProxy.Disable(); } catch { }
             _liveConnections.Stop();
-            _xray.Disconnect();
-            UpdateConnectionUi(false);
+            try { await _connectionCoordinator.DisconnectAsync(); } catch { }
+            UpdateConnectionUi(_connectionCoordinator.State);
             _log.Write("Ошибка подключения: " + ex);
 
             MessageBox.Show(
@@ -338,16 +366,15 @@ public partial class MainWindow : Window
         finally
         {
             ConnectButton.IsEnabled = true;
-            ConnectButton.Content = _xray.IsRunning ? "Отключить" : "Подключить";
+            ConnectButton.Content = _connectionCoordinator.State == ConnectionState.Connected ? "Отключить" : "Подключить";
         }
     }
 
-    private void Disconnect()
+    private async Task DisconnectAsync()
     {
-        try { _systemProxy.Disable(); } catch { }
         _liveConnections.Stop();
-        _xray.Disconnect();
-        UpdateConnectionUi(false);
+        await _connectionCoordinator.DisconnectAsync();
+        UpdateConnectionUi(_connectionCoordinator.State);
         _log.Write("Отключено.");
     }
 
@@ -372,24 +399,50 @@ public partial class MainWindow : Window
         UpdateDashboardSummary();
     }
 
+    private void UpdateConnectionUi(ConnectionState state)
+    {
+        if (state == ConnectionState.Connected)
+        {
+            UpdateConnectionUi(true);
+            return;
+        }
+
+        UpdateConnectionUi(false);
+        if (state == ConnectionState.Connecting) StatusText.Text = "Подключение…";
+        else if (state == ConnectionState.Stopping) StatusText.Text = "Отключение…";
+        else if (state == ConnectionState.Failed) StatusText.Text = "Ошибка";
+    }
+
     private void UpdateDashboardSummary()
     {
-        var active = _settings.Nodes.FirstOrDefault(x => x.Id == _settings.SelectedNodeId);
-        if (active is null)
+        if (_connectionCoordinator.State == ConnectionState.Connected && _connectionCoordinator.ActiveNode is ActiveNodeSnapshot connected)
         {
-            ActiveServerText.Text = "Сервер не выбран";
-            ActiveServerMetaText.Text = _settings.Subscriptions.Count == 0
-                ? "Добавьте профиль, чтобы начать"
-                : "Выберите сервер в разделе «Профили»";
+            ActiveServerText.Text = connected.Name;
+            var security = string.IsNullOrWhiteSpace(connected.Security) || connected.Security == "none"
+                ? ""
+                : $" · {connected.Security.ToUpperInvariant()}";
+            ActiveServerMetaText.Text =
+                $"{connected.Protocol.ToUpperInvariant()}{security} · {connected.Endpoint} · {connected.LatencyDisplay}";
         }
         else
         {
-            ActiveServerText.Text = active.Name;
-            var security = string.IsNullOrWhiteSpace(active.Security) || active.Security == "none"
-                ? ""
-                : $" · {active.Security.ToUpperInvariant()}";
-            ActiveServerMetaText.Text =
-                $"{active.Protocol.ToUpperInvariant()}{security} · {active.Endpoint} · {active.LatencyDisplay}";
+            var selected = _settings.Nodes.FirstOrDefault(x => x.Id == _settings.SelectedNodeId);
+            if (selected is null)
+            {
+                ActiveServerText.Text = "Сервер не выбран";
+                ActiveServerMetaText.Text = _settings.Subscriptions.Count == 0
+                    ? "Добавьте профиль, чтобы начать"
+                    : "Выберите сервер в разделе «Профили»";
+            }
+            else
+            {
+                ActiveServerText.Text = selected.Name;
+                var security = string.IsNullOrWhiteSpace(selected.Security) || selected.Security == "none"
+                    ? ""
+                    : $" · {selected.Security.ToUpperInvariant()}";
+                ActiveServerMetaText.Text =
+                    $"{selected.Protocol.ToUpperInvariant()}{security} · {selected.Endpoint} · {selected.LatencyDisplay}";
+            }
         }
 
         var group = string.IsNullOrWhiteSpace(_settings.SelectedGroupId)
@@ -515,31 +568,17 @@ public partial class MainWindow : Window
 
     private async Task RefreshSubscriptionAsync(SubscriptionDefinition subscription)
     {
-        var oldNodes = _settings.Nodes
-            .Where(x => x.SourceSubscriptionId == subscription.Id)
-            .ToDictionary(x => x.Id, StringComparer.Ordinal);
-
-        var nodes = await _subscriptionService.RefreshAsync(subscription);
-        if (nodes.Count == 0)
-            throw new InvalidOperationException("Поддерживаемые серверы в подписке не найдены.");
-
-        foreach (var node in nodes)
+        await _connectionCoordinator.RunExclusiveAsync(async () =>
         {
-            if (!oldNodes.TryGetValue(node.Id, out var old))
-                continue;
+            var nodes = await _subscriptionService.RefreshAsync(subscription);
+            if (nodes.Count == 0)
+                throw new InvalidOperationException("Поддерживаемые серверы в подписке не найдены.");
+            SubscriptionNodeReconciler.ApplyRefresh(_settings, subscription.Id, nodes);
+            CleanGroupMembership();
 
-            node.LatencyMs = old.LatencyMs;
-            node.LatencyCheckedAt = old.LatencyCheckedAt;
-        }
-
-        _settings.Nodes.RemoveAll(x => x.SourceSubscriptionId == subscription.Id);
-        _settings.Nodes.AddRange(nodes);
-
-        CleanGroupMembership();
-
-        if (_settings.SelectedNodeId is null ||
-            _settings.Nodes.All(x => x.Id != _settings.SelectedNodeId))
-            _settings.SelectedNodeId = nodes[0].Id;
+            if (_settings.SelectedNodeId is null || _settings.Nodes.All(x => x.Id != _settings.SelectedNodeId))
+                _settings.SelectedNodeId = nodes[0].Id;
+        });
     }
 
     private async void DeleteSubscription_Click(object sender, RoutedEventArgs e)
@@ -547,16 +586,8 @@ public partial class MainWindow : Window
         if (sender is not Button { Tag: string id })
             return;
 
-        var removedIds = _settings.Nodes
-            .Where(x => x.SourceSubscriptionId == id)
-            .Select(x => x.Id)
-            .ToHashSet(StringComparer.Ordinal);
-
         _settings.Subscriptions.RemoveAll(x => x.Id == id);
-        _settings.Nodes.RemoveAll(x => x.SourceSubscriptionId == id);
-
-        foreach (var group in _settings.Groups)
-            group.NodeIds.RemoveAll(removedIds.Contains);
+        SubscriptionNodeReconciler.RemoveSubscription(_settings, id);
 
         if (_settings.Nodes.All(x => x.Id != _settings.SelectedNodeId))
             _settings.SelectedNodeId = _settings.Nodes.FirstOrDefault()?.Id;
@@ -724,8 +755,8 @@ public partial class MainWindow : Window
             mode == _settings.ConnectionMode)
             return;
 
-        if (_xray.IsRunning)
-            Disconnect();
+        if (_connectionCoordinator.State != ConnectionState.Disconnected)
+            await DisconnectAsync();
 
         _settings.ConnectionMode = mode;
         UpdateConnectionUi(false);
@@ -836,8 +867,8 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (_xray.IsRunning)
-            Disconnect();
+        if (_connectionCoordinator.State != ConnectionState.Disconnected)
+            await DisconnectAsync();
 
         _settings.SocksPort = socks;
         _settings.HttpPort = http;
@@ -855,7 +886,11 @@ public partial class MainWindow : Window
         try
         {
             _log.Write("Проверка обновлений…");
-            var update = await _updateService.CheckAndDownloadAsync(CurrentVersion());
+            UpdateInfo? update = null;
+            await _connectionCoordinator.RunExclusiveAsync(async () =>
+            {
+                update = await _updateService.CheckAndDownloadAsync(CurrentVersion());
+            });
 
             if (update is null)
             {
@@ -895,16 +930,15 @@ public partial class MainWindow : Window
         }
     }
 
-    private void InstallUpdate_Click(object sender, RoutedEventArgs e)
+    private async void InstallUpdate_Click(object sender, RoutedEventArgs e)
     {
         if (_pendingUpdate is null)
             return;
 
         try
         {
-            try { _systemProxy.Disable(); } catch { }
             _liveConnections.Stop();
-            _xray.Disconnect();
+            await DisconnectAsync();
             UpdateService.StartInstaller(_pendingUpdate);
             Application.Current.Shutdown();
         }
